@@ -31,7 +31,7 @@ const BREAKPOINT_OPCODE: u8 = 0xCC;
 
 // ARM thread state flavor
 pub const ARM_THREAD_STATE64: i32 = 6;
-pub const ARM_THREAD_STATE64_COUNT: u32 = 68; // Size in 32-bit words (68 = 17 64-bit registers / 2)
+pub const ARM_THREAD_STATE64_COUNT: u32 = 68; // 34 64-bit registers (x0-x29, fp, lr, sp, pc, cpsr)
 
 // ARM thread state structure
 #[repr(C)]
@@ -62,7 +62,9 @@ extern "C" {
 }
 
 // ARM NEON (SIMD) state flavor and structure (for future use)
+#[allow(dead_code)]
 pub const ARM_NEON_STATE64: i32 = 17;
+#[allow(dead_code)]
 pub const ARM_NEON_STATE64_COUNT: u32 = 66; // 33 128-bit registers (q0-q31) + fpsr/fpcr
 
 /// MacOS-specific debugger implementation
@@ -294,16 +296,16 @@ impl MacosDebugger {
         // Extract special registers
         registers.set(Register::X29, arm_thread_state.__fp);
         registers.set(Register::X30, arm_thread_state.__lr);
-        registers.set(Register::SP, arm_thread_state.__sp);
-        registers.set(Register::PC, arm_thread_state.__pc);
-        registers.set(Register::CPSR, arm_thread_state.__cpsr);
+        registers.set(Register::Sp, arm_thread_state.__sp);
+        registers.set(Register::Pc, arm_thread_state.__pc);
+        registers.set(Register::Cpsr, arm_thread_state.__cpsr);
         
         // Get NEON/FP registers if needed (disabled for now as it's more complex)
         // Getting NEON registers requires ARM_NEON_STATE64 in a separate call
         
         debug!("Registers: PC={}, SP={}", 
-            registers.format_value(Register::PC),
-            registers.format_value(Register::SP));
+            registers.format_value(Register::Pc),
+            registers.format_value(Register::Sp));
         
         Ok(registers)
     }
@@ -360,15 +362,15 @@ impl MacosDebugger {
             arm_thread_state.__lr = value;
         }
         
-        if let Some(value) = registers.get(Register::SP) {
+        if let Some(value) = registers.get(Register::Sp) {
             arm_thread_state.__sp = value;
         }
         
-        if let Some(value) = registers.get(Register::PC) {
+        if let Some(value) = registers.get(Register::Pc) {
             arm_thread_state.__pc = value;
         }
         
-        if let Some(value) = registers.get(Register::CPSR) {
+        if let Some(value) = registers.get(Register::Cpsr) {
             arm_thread_state.__cpsr = value;
         }
         

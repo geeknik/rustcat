@@ -793,72 +793,65 @@ impl DisassemblyView {
         let inner_area = block.inner(area);
         f.render_widget(block, area);
         
-        // Get the current PC
-        let pc = if let Ok(registers) = debugger.get_registers() {
-            registers.get(Register::PC)
-        } else {
-            None
-        };
-        
-        // Use provided address or current PC
-        let address = current_address.or(pc);
-        
-        if let Some(addr) = address {
-            // How many instructions to display (based on height)
-            let count = inner_area.height as usize;
-            
-            // Try to put the current instruction in the middle
-            let context_before = count / 2;
-            let context_after = count - context_before - 1;
-            
-            // Get disassembly with context
-            if let Ok(instructions) = debugger.get_disassembly_context(addr, context_before, context_after) {
-                // Find the index of the current instruction
-                let _current_idx = instructions.iter().position(|ins| ins.address == addr).unwrap_or_default();
+        // Get current program counter
+        if let Some(registers) = debugger.get_registers().ok() {
+            if let Some(pc) = registers.get(Register::Pc) {
+                // How many instructions to display (based on height)
+                let count = inner_area.height as usize;
                 
-                // Convert instructions to ListItems
-                let items: Vec<ListItem> = instructions.iter().enumerate().map(|(idx, ins)| {
-                    // Check if this is the current instruction or selected
-                    let is_current = ins.address == addr;
-                    let is_selected = selected_index == Some(idx);
-                    
-                    // Style based on whether it's current or selected
-                    let style = if is_current && is_selected {
-                        Style::default().fg(Color::Black).bg(Color::Yellow)
-                    } else if is_current {
-                        Style::default().fg(Color::Yellow)
-                    } else if is_selected {
-                        Style::default().fg(Color::Blue)
-                    } else {
-                        Style::default().fg(Color::Gray)
-                    };
-                    
-                    // Format the instruction line
-                    let line = format!(
-                        "{:#016x}: {:12} {}", 
-                        ins.address, 
-                        ins.hex_bytes(), 
-                        ins.text
-                    );
-                    
-                    ListItem::new(Line::from(vec![Span::styled(
-                        line,
-                        style,
-                    )]))
-                }).collect();
+                // Try to put the current instruction in the middle
+                let context_before = count / 2;
+                let context_after = count - context_before - 1;
                 
-                // Create and render the list
-                let list = List::new(items)
-                    .highlight_symbol(">> ")
-                    .style(Style::default().fg(Color::White));
-                
-                f.render_widget(list, inner_area);
-            } else {
-                // Show error message if disassembly fails
-                let message = Paragraph::new("Could not disassemble at this address")
-                    .style(Style::default().fg(Color::Red))
-                    .wrap(Wrap { trim: true });
-                f.render_widget(message, inner_area);
+                // Get disassembly with context
+                if let Ok(instructions) = debugger.get_disassembly_context(pc, context_before, context_after) {
+                    // Find the index of the current instruction
+                    let _current_idx = instructions.iter().position(|ins| ins.address == pc).unwrap_or_default();
+                    
+                    // Convert instructions to ListItems
+                    let items: Vec<ListItem> = instructions.iter().enumerate().map(|(idx, ins)| {
+                        // Check if this is the current instruction or selected
+                        let is_current = ins.address == pc;
+                        let is_selected = selected_index == Some(idx);
+                        
+                        // Style based on whether it's current or selected
+                        let style = if is_current && is_selected {
+                            Style::default().fg(Color::Black).bg(Color::Yellow)
+                        } else if is_current {
+                            Style::default().fg(Color::Yellow)
+                        } else if is_selected {
+                            Style::default().fg(Color::Blue)
+                        } else {
+                            Style::default().fg(Color::Gray)
+                        };
+                        
+                        // Format the instruction line
+                        let line = format!(
+                            "{:#016x}: {:12} {}", 
+                            ins.address, 
+                            ins.hex_bytes(), 
+                            ins.text
+                        );
+                        
+                        ListItem::new(Line::from(vec![Span::styled(
+                            line,
+                            style,
+                        )]))
+                    }).collect();
+                    
+                    // Create and render the list
+                    let list = List::new(items)
+                        .highlight_symbol(">> ")
+                        .style(Style::default().fg(Color::White));
+                    
+                    f.render_widget(list, inner_area);
+                } else {
+                    // Show error message if disassembly fails
+                    let message = Paragraph::new("Could not disassemble at this address")
+                        .style(Style::default().fg(Color::Red))
+                        .wrap(Wrap { trim: true });
+                    f.render_widget(message, inner_area);
+                }
             }
         } else {
             // Show message when no address is available
@@ -1217,6 +1210,8 @@ impl VariablesView {
     }
 }
 
+/// Draw code editor view with line numbers and current line highlighted
+#[allow(dead_code)]
 pub fn draw_code_view<B: Backend>(f: &mut Frame<B>, area: Rect, lines: &[String], selected_line: Option<usize>) {
     let items: Vec<ListItem> = lines
         .iter()
