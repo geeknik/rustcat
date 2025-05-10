@@ -12,7 +12,7 @@ categories = ["development-tools", "command-line-utilities", "debugging", "visua
 [dependencies]
 # UI/TUI dependencies
 ratatui = "0.23.0"
-crossterm = "0.27.0"
+crossterm = { version = "0.27.0", default-features = false, features = ["event-stream", "serde"] }
 
 # Parsing libraries
 gimli = "0.31.1"
@@ -33,11 +33,7 @@ log = "0.4.19"
 env_logger = "0.10.0"
 byteorder = "1.4.3"
 regex = "1.11.1"
-chrono = "0.4.41"
-
-# Set specific Windows dependencies versions
-windows-sys = "0.52.0"
-mio = "1.0.3"
+chrono = { version = "0.4.41", default-features = false, features = ["std"] }
 
 # Platform-specific dependencies
 [target.'cfg(target_os = "macos")'.dependencies]
