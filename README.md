@@ -1,3 +1,5 @@
+<img src="https://github.com/user-attachments/assets/f5db3580-b71e-4eca-a820-f1f8f89d0590" width="175" />
+
 # 🧠 RUSTCAT
 
 A MacOS-Only, Rust-Based, Fast-as-Hell Native Debugger
