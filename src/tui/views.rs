@@ -335,7 +335,7 @@ pub fn draw_memory_view<B: Backend>(
                 let lines: Vec<&str> = formatted.lines().take(visible_rows).collect();
                 
                 let text: Vec<Line> = lines.into_iter()
-                    .map(|line| Line::from(line))
+                    .map(Line::from)
                     .collect();
                 
                 let memory_paragraph = Paragraph::new(text)
@@ -1210,4 +1210,29 @@ impl VariablesView {
             }
         }
     }
+}
+
+pub fn draw_code_view<B: Backend>(f: &mut Frame<B>, area: Rect, lines: &[String], selected_line: Option<usize>) {
+    let items: Vec<ListItem> = lines
+        .iter()
+        .enumerate()
+        .map(|(i, line)| {
+            let style = if selected_line.map_or(false, |sel| sel == i) {
+                Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)
+            } else {
+                Style::default()
+            };
+            
+            ListItem::new(Line::from(line.clone())).style(style)
+        })
+        .collect();
+
+    let list = List::new(items)
+        .block(Block::default()
+            .borders(Borders::ALL)
+            .title("Code")
+            .title_alignment(Alignment::Center))
+        .highlight_style(Style::default().add_modifier(Modifier::BOLD));
+    
+    f.render_widget(list, area);
 }
