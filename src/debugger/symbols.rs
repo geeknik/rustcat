@@ -3,7 +3,7 @@ use std::path::Path;
 
 use anyhow::{anyhow, Result};
 use goblin::Object;
-use log::{debug, info, warn};
+use log::{debug, warn};
 use cpp_demangle::Symbol as CppSymbol;
 
 /// Symbol type classification
@@ -370,13 +370,11 @@ impl SymbolTable {
         
         // Extract potential function start addresses from symbols
         if let Some(symbols) = &macho.symbols {
-            for symbol_result in symbols.iter() {
-                if let Ok((_, sym)) = symbol_result {
-                    // Check if it's a function symbol (in __TEXT section)
-                    if (sym.n_type & 0x0e) == 0x0e && sym.n_sect == 1 && sym.n_value > 0 {
-                        let offset = sym.n_value - text_base;
-                        function_starts.push(offset);
-                    }
+            for (_, sym) in symbols.iter().flatten() {
+                // Check if it's a function symbol (in __TEXT section)
+                if (sym.n_type & 0x0e) == 0x0e && sym.n_sect == 1 && sym.n_value > 0 {
+                    let offset = sym.n_value - text_base;
+                    function_starts.push(offset);
                 }
             }
         }
@@ -532,15 +530,11 @@ impl SymbolTable {
         self.by_address.insert(addr, symbol.clone());
         
         // Add to name map (only if not already present or if this is a better symbol)
-        if !self.by_name.contains_key(&name) {
-            self.by_name.insert(name, addr);
-        }
+        self.by_name.entry(name).or_insert(addr);
         
         // Add to demangled name map if available
         if let Some(demangled) = &symbol.demangled_name {
-            if !self.by_demangled_name.contains_key(demangled) {
-                self.by_demangled_name.insert(demangled.clone(), addr);
-            }
+            self.by_demangled_name.entry(demangled.clone()).or_insert(addr);
         }
     }
     

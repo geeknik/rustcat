@@ -7,14 +7,19 @@ pub enum BreakpointType {
     /// Normal execution breakpoint
     Execution,
     /// Hardware breakpoint (using debug registers)
+    #[allow(dead_code)]
     Hardware,
     /// Software watchpoint (memory read/write)
+    #[allow(dead_code)]
     Watchpoint,
     /// One-shot breakpoint (auto-deletes after being hit)
+    #[allow(dead_code)]
     OneShot,
     /// Conditional breakpoint
+    #[allow(dead_code)]
     Conditional,
     /// Logging breakpoint (doesn't stop execution)
+    #[allow(dead_code)]
     Logging,
 }
 
@@ -49,7 +54,8 @@ pub struct Breakpoint {
     ignore_count: usize,
     /// Condition (expression to evaluate, breakpoint triggers only if true)
     condition: Option<String>,
-    /// Log message (printed when breakpoint is hit, even if execution continues)
+    /// Log message for logging breakpoints
+    #[allow(dead_code)]
     log_message: Option<String>,
     /// Symbol name associated with this breakpoint (if any)
     symbol_name: Option<String>,

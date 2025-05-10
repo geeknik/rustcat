@@ -55,6 +55,28 @@ This document serves as a practical security checklist for developers working on
 - [ ] Scan dependencies for known vulnerabilities
 - [ ] Verify all TODOs and FIXMEs have been addressed
 
+## Local Security Testing Before Pushing
+
+RUSTCAT includes a pre-push security check script that should be run before pushing changes to GitHub:
+
+```bash
+./pre-push-security-check.sh
+```
+
+This script performs the following checks:
+1. Runs all unit tests
+2. Runs clippy with security lints
+3. Checks for security vulnerabilities in dependencies with cargo-audit
+4. Runs quick fuzz tests on critical components (if using nightly Rust)
+5. Performs a final check for any non-critical issues
+
+A git pre-push hook is also provided that will automatically run this script before pushing. To set it up:
+```bash
+chmod +x .git/hooks/pre-push
+```
+
+**Important**: Our GitHub CI/CD pipeline should only confirm the quality of our code, not reveal issues that should have been caught locally. Always run the local security tests before pushing changes.
+
 ## Security Testing
 
 - [ ] Write unit tests for security-critical functionality

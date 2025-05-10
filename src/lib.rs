@@ -29,8 +29,9 @@ pub fn init_logging(level: log::LevelFilter) {
 
 /// Parse a command string (wrapper around App::parse_command)
 pub fn parse_command(cmd_str: &str) -> Result<AppCommand, String> {
-    // This is a temporary wrapper to make the tests compile
-    // In a real implementation, we'd either move command parsing to a separate module
-    // or correctly expose it from App
-    Err("Command parsing not yet implemented for tests".to_string())
+    // Use a real App instance to parse the command
+    // This assumes App::parse_command is a pure function (does not require full App state)
+    // If not, refactor App::parse_command to be a standalone function or move to a command module
+    let app = App::new(Debugger::new("/dev/null").map_err(|e| e.to_string())?).map_err(|e| e.to_string())?;
+    Ok(app.parse_command(cmd_str))
 } 

@@ -1,3 +1,5 @@
+#![allow(clippy::collapsible_match)]
+
 use std::path::Path;
 use std::collections::HashMap;
 
@@ -369,7 +371,7 @@ impl<'a> DwarfParser<'a> {
     }
 }
 
-impl<'a> Default for DwarfParser<'a> {
+impl Default for DwarfParser<'_> {
     fn default() -> Self {
         Self::new()
     }

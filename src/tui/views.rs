@@ -2,7 +2,7 @@ use ratatui::{
     backend::Backend,
     layout::{Rect, Alignment, Layout, Constraint, Direction},
     style::{Color, Modifier, Style},
-    text::{Line, Span, Spans},
+    text::{Line, Span},
     widgets::{Block, Borders, List, ListItem, Paragraph, Table, Row, Cell, Tabs, ListState, Wrap},
     symbols,
     Frame,
@@ -13,12 +13,15 @@ use crate::debugger::memory::MemoryFormat;
 use crate::debugger::threads::{ThreadState};
 use crate::debugger::registers::{RegisterGroup, Register};
 use crate::debugger::core::Debugger;
-use crate::debugger::disasm::Instruction;
-use std::sync::{Arc, Mutex};
-use std::collections::HashMap;
 
 /// View for the code display
 pub struct CodeView;
+
+impl Default for CodeView {
+    fn default() -> Self {
+        Self::new()
+    }
+}
 
 impl CodeView {
     pub fn new() -> Self {
@@ -44,11 +47,18 @@ impl CodeView {
 /// View for memory display
 pub struct MemoryView;
 
+impl Default for MemoryView {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl MemoryView {
     pub fn new() -> Self {
         Self
     }
 
+    #[allow(dead_code)]
     pub fn render<B: Backend>(&self, f: &mut Frame<B>, area: Rect) {
         let text = vec![
             Line::from("Memory View - Hex and ASCII"),
@@ -68,13 +78,20 @@ impl MemoryView {
 /// View for registers
 pub struct RegistersView;
 
+impl Default for RegistersView {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl RegistersView {
     pub fn new() -> Self {
         Self
     }
 
+    #[allow(dead_code)]
     pub fn render<B: Backend>(&self, f: &mut Frame<B>, area: Rect) {
-        let registers = vec![
+        let registers = [
             "rax: 0x0000000100000f24",
             "rbx: 0x0000000000000000",
             "rcx: 0x00007ff7bfeff680",
@@ -84,12 +101,12 @@ impl RegistersView {
             "rbp: 0x00007ff7bfeff6a0",
             "rsp: 0x00007ff7bfeff648",
             "r8:  0x0000000000000000",
-            "r9:  0x0000000000000000",
+            "r9:  0x0000000000000000"
         ];
         
         let items: Vec<ListItem> = registers
             .iter()
-            .map(|r| ListItem::new(vec![Line::from(*r)]))
+            .map(|r| ListItem::new(Line::from(vec![Span::styled(*r, Style::default().fg(Color::White))])))
             .collect();
         
         let list = List::new(items)
@@ -105,20 +122,27 @@ impl RegistersView {
 /// View for the stack trace
 pub struct StackView;
 
+impl Default for StackView {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl StackView {
     pub fn new() -> Self {
         Self
     }
 
+    #[allow(dead_code)]
     pub fn render<B: Backend>(&self, f: &mut Frame<B>, area: Rect) {
-        let stack_frames = vec![
+        let stack_frames = [
             "#0 0x0000000100000f24 main()",
-            "#1 0x00007ff7bfc01014 start + 0",
+            "#1 0x00007ff7bfc01014 start + 0"
         ];
         
         let items: Vec<ListItem> = stack_frames
             .iter()
-            .map(|s| ListItem::new(vec![Line::from(*s)]))
+            .map(|s| ListItem::new(Line::from(vec![Span::styled(*s, Style::default().fg(Color::White))])))
             .collect();
         
         let list = List::new(items)
@@ -134,21 +158,28 @@ impl StackView {
 /// View for threads
 pub struct ThreadsView;
 
+impl Default for ThreadsView {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl ThreadsView {
     pub fn new() -> Self {
         Self
     }
 
+    #[allow(dead_code)]
     pub fn render<B: Backend>(&self, f: &mut Frame<B>, area: Rect) {
-        let threads = vec![
+        let threads = [
             "Thread 0x1103 (main)",
             "Thread 0x1503 (worker)",
-            "Thread 0x1703 (worker)",
+            "Thread 0x1703 (worker)"
         ];
         
         let items: Vec<ListItem> = threads
             .iter()
-            .map(|t| ListItem::new(vec![Line::from(*t)]))
+            .map(|t| ListItem::new(Line::from(vec![Span::styled(*t, Style::default().fg(Color::White))])))
             .collect();
         
         let list = List::new(items)
@@ -164,6 +195,12 @@ impl ThreadsView {
 /// View for command input
 pub struct CommandView;
 
+impl Default for CommandView {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl CommandView {
     pub fn new() -> Self {
         Self
@@ -171,10 +208,10 @@ impl CommandView {
 
     pub fn render<B: Backend>(&self, f: &mut Frame<B>, area: Rect, app: &App) {
         let block = Block::default()
-            .title(Span::styled(
+            .title(Line::from(Span::styled(
                 "Command",
                 Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD),
-            ))
+            )))
             .borders(Borders::ALL)
             .border_style(Style::default().fg(if app.current_view == View::Command {
                 Color::Green
@@ -190,22 +227,22 @@ impl CommandView {
         
         // Display the expression evaluation result if available
         if let Some(result) = &app.expression_result {
-            items.push(ListItem::new(vec![Line::from(vec![
+            items.push(ListItem::new(Line::from(vec![
                 Span::styled("Result: ", Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)),
                 Span::styled(result, Style::default().fg(Color::LightGreen)),
-            ])].into_iter().collect::<Vec<Line>>()));
+            ])));
             
             // Add a separator
-            items.push(ListItem::new(vec![Line::from(vec![
+            items.push(ListItem::new(Line::from(vec![
                 Span::styled("─".repeat(inner_area.width as usize), Style::default().fg(Color::DarkGray))
-            ])].into_iter().collect::<Vec<Line>>()));
+            ])));
         }
         
         // Add command history if available
         if !app.command_history.is_empty() {
-            items.push(ListItem::new(vec![Line::from(vec![
+            items.push(ListItem::new(Line::from(vec![
                 Span::styled("Command History", Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD))
-            ])].into_iter().collect::<Vec<Line>>()));
+            ])));
             
             // Add the most recent commands (up to 10)
             let num_items = std::cmp::min(app.command_history.len(), 10);
@@ -213,15 +250,15 @@ impl CommandView {
             
             for i in start_idx..app.command_history.len() {
                 let cmd = &app.command_history[i];
-                items.push(ListItem::new(vec![Line::from(vec![
+                items.push(ListItem::new(Line::from(vec![
                     Span::styled(format!("{}: ", i - start_idx + 1), Style::default().fg(Color::DarkGray)),
                     Span::styled(cmd, Style::default().fg(Color::White)),
-                ])].into_iter().collect::<Vec<Line>>()));
+                ])));
             }
         }
         
         // Add command input display
-        let command_prompt = if app.active_block == ActiveBlock::CommandInput {
+        let _command_prompt = if app.active_block == ActiveBlock::CommandInput {
             format!("> {}", app.command_input)
         } else {
             String::from("> ")
@@ -229,9 +266,9 @@ impl CommandView {
         
         // If there are no items, at least show the prompt
         if items.is_empty() {
-            items.push(ListItem::new(vec![Line::from(vec![
+            items.push(ListItem::new(Line::from(vec![
                 Span::styled("Type a command and press Enter", Style::default().fg(Color::Gray)),
-            ])].into_iter().collect::<Vec<Line>>()));
+            ])));
         }
         
         let list = List::new(items)
@@ -271,10 +308,10 @@ pub fn draw_memory_view<B: Backend>(
     memory_address: u64,
 ) {
     let block = Block::default()
-        .title(Span::styled(
+        .title(Line::from(Span::styled(
             format!("Memory - {}", app.get_memory_format().as_str()),
             Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD),
-        ))
+        )))
         .borders(Borders::ALL)
         .border_style(Style::default().fg(if app.current_view == View::Memory {
             Color::Green
@@ -302,7 +339,7 @@ pub fn draw_memory_view<B: Backend>(
                 let lines: Vec<&str> = formatted.lines().take(visible_rows).collect();
                 
                 let text: Vec<Line> = lines.into_iter()
-                    .map(|line| Line::from(line))
+                    .map(Line::from)
                     .collect();
                 
                 let memory_paragraph = Paragraph::new(text)
@@ -315,7 +352,7 @@ pub fn draw_memory_view<B: Backend>(
         }
         
         // Calculate total rows
-        let total_rows = (data.len() + bytes_per_row - 1) / bytes_per_row;
+        let total_rows = data.len().div_ceil(bytes_per_row);
         
         // Prepare rows of text
         let mut rows = Vec::with_capacity(visible_rows.min(total_rows));
@@ -327,26 +364,31 @@ pub fn draw_memory_view<B: Backend>(
             
             // Generate address column
             let address_text = format!("{:016x}", row_address);
-            let address_span = Span::styled(
+            let _address_span = Line::from(vec![Span::styled(
                 address_text,
                 Style::default().fg(Color::Yellow),
-            );
+            )]);
             
             // Generate hex representation
             let mut hex_text = String::with_capacity(bytes_per_row * 3);
             let mut ascii_text = String::with_capacity(bytes_per_row);
+            let mut col_idx = 0;
             
-            for i in start_idx..end_idx {
-                let byte = data[i];
-                
-                // Add hex representation
+            for byte in data.iter().take(end_idx).skip(start_idx) {
+                // Add hex value of the byte
                 hex_text.push_str(&format!("{:02x} ", byte));
                 
-                // Add ASCII representation (only printable characters)
-                if byte >= 32 && byte <= 126 {
-                    ascii_text.push(byte as char);
+                // Add ASCII representation
+                if (32..=126).contains(byte) {
+                    ascii_text.push(*byte as char);
                 } else {
                     ascii_text.push('.');
+                }
+                
+                // Add space after every 8 bytes
+                col_idx += 1;
+                if col_idx % 8 == 0 && col_idx < bytes_per_row {
+                    hex_text.push_str("  ");
                 }
             }
             
@@ -359,23 +401,23 @@ pub fn draw_memory_view<B: Backend>(
             }
             
             // Create spans for the row
-            let hex_span = Span::styled(
-                hex_text,
+            let _hex_span = Line::from(vec![Span::styled(
+                hex_text.clone(),
                 Style::default().fg(Color::White),
-            );
+            )]);
             
-            let ascii_span = Span::styled(
-                ascii_text,
+            let _ascii_span = Line::from(vec![Span::styled(
+                ascii_text.clone(),
                 Style::default().fg(Color::Cyan),
-            );
+            )]);
             
             // Combine spans into a row
             let row = Line::from(vec![
-                address_span,
+                Span::styled(format!("{:016x}", row_address), Style::default().fg(Color::Yellow)),
                 Span::raw(" | "),
-                hex_span,
+                Span::styled(hex_text.clone(), Style::default().fg(Color::White)),
                 Span::raw(" | "),
-                ascii_span,
+                Span::styled(ascii_text.clone(), Style::default().fg(Color::Cyan)),
             ]);
             
             rows.push(row);
@@ -420,10 +462,10 @@ pub fn draw_thread_view<B: Backend>(
     area: Rect,
 ) {
     let block = Block::default()
-        .title(Span::styled(
+        .title(Line::from(Span::styled(
             "Threads",
             Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD),
-        ))
+        )))
         .borders(Borders::ALL)
         .border_style(Style::default().fg(if app.current_view == View::Threads {
             Color::Green
@@ -541,10 +583,10 @@ pub fn draw_call_stack_view<B: Backend>(
     area: Rect,
 ) {
     let block = Block::default()
-        .title(Span::styled(
+        .title(Line::from(Span::styled(
             "Call Stack",
             Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD),
-        ))
+        )))
         .borders(Borders::ALL)
         .border_style(Style::default().fg(if app.current_view == View::Stack {
             Color::Green
@@ -568,13 +610,13 @@ pub fn draw_call_stack_view<B: Backend>(
                     let items: Vec<ListItem> = call_stack.iter()
                         .map(|frame| {
                             let desc = frame.description();
-                            ListItem::new(desc).style(
-                                if frame.number == 0 {
+                            ListItem::new(Line::from(vec![
+                                Span::styled(desc, if frame.number == 0 {
                                     Style::default().fg(Color::Green) // Current frame
                                 } else {
                                     Style::default()
-                                }
-                            )
+                                })
+                            ]))
                         })
                         .collect();
                     
@@ -626,30 +668,30 @@ pub fn draw_registers_view<B: Backend>(f: &mut Frame<B>, app: &App, area: Rect) 
     
     // Create tabs for register groups
     let titles = vec![
-        Span::styled("General", 
+        Line::from(Span::styled("General", 
             if app.register_group_index == 0 { 
                 Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)
             } else { 
                 Style::default()
             }
-        ),
-        Span::styled("Special", 
+        )),
+        Line::from(Span::styled("Special", 
             if app.register_group_index == 1 { 
                 Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)
             } else { 
                 Style::default()
             }
-        ),
-        Span::styled("Vector", 
+        )),
+        Line::from(Span::styled("Vector", 
             if app.register_group_index == 2 { 
                 Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)
             } else { 
                 Style::default()
             }
-        ),
+        )),
     ];
     
-    let register_tabs = Tabs::new(vec![Line::from(titles)])
+    let register_tabs = Tabs::new(titles.into_iter().collect::<Vec<_>>())
         .block(Block::default().borders(Borders::ALL).title("Register Groups"))
         .divider(symbols::line::VERTICAL)
         .highlight_style(Style::default().fg(Color::Yellow))
@@ -689,25 +731,21 @@ pub fn draw_registers_view<B: Backend>(f: &mut Frame<B>, app: &App, area: Rect) 
             };
             
             register_items.push(
-                ListItem::new(
-                    Line::from(vec![
-                        Span::styled(format!("{:<5}", reg.display_name()), style.add_modifier(Modifier::BOLD)),
-                        Span::raw(" "),
-                        Span::styled(value_text, style),
-                        Span::raw(" "),
-                        Span::styled(abi_info, Style::default().fg(Color::Gray)),
-                    ])
-                )
+                ListItem::new(Line::from(vec![
+                    Span::styled(format!("{:<5}", reg.display_name()), style.add_modifier(Modifier::BOLD)),
+                    Span::raw(" "),
+                    Span::styled(value_text, style),
+                    Span::raw(" "),
+                    Span::styled(abi_info, Style::default().fg(Color::Gray)),
+                ]))
             );
         }
     } else {
         // No register data available
         register_items.push(
-            ListItem::new(
-                Line::from(vec![
-                    Span::styled("No register data available", Style::default().fg(Color::Red)),
-                ])
-            )
+            ListItem::new(Line::from(vec![
+                Span::styled("No register data available", Style::default().fg(Color::Red)),
+            ]))
         );
     }
     
@@ -737,13 +775,19 @@ pub fn draw_registers_view<B: Backend>(f: &mut Frame<B>, app: &App, area: Rect) 
 /// A view that displays disassembled code
 pub struct DisassemblyView;
 
+impl Default for DisassemblyView {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl DisassemblyView {
     pub fn new() -> Self {
         Self {}
     }
     
-    /// Render the disassembly view
-    pub fn render<B: Backend>(&self, f: &mut Frame<B>, area: Rect, debugger: &Debugger, current_address: Option<u64>, selected_index: Option<usize>) {
+    #[allow(dead_code)]
+    pub fn render<B: Backend>(&self, f: &mut Frame<B>, area: Rect, debugger: &Debugger, _current_address: Option<u64>, selected_index: Option<usize>) {
         // Create a block for the view
         let block = Block::default()
             .title("Disassembly")
@@ -753,72 +797,65 @@ impl DisassemblyView {
         let inner_area = block.inner(area);
         f.render_widget(block, area);
         
-        // Get the current PC
-        let pc = if let Ok(registers) = debugger.get_registers() {
-            registers.get(Register::PC)
-        } else {
-            None
-        };
-        
-        // Use provided address or current PC
-        let address = current_address.or(pc);
-        
-        if let Some(addr) = address {
-            // How many instructions to display (based on height)
-            let count = inner_area.height as usize;
-            
-            // Try to put the current instruction in the middle
-            let context_before = count / 2;
-            let context_after = count - context_before - 1;
-            
-            // Get disassembly with context
-            if let Ok(instructions) = debugger.get_disassembly_context(addr, context_before, context_after) {
-                // Find the index of the current instruction
-                let current_idx = instructions.iter().position(|ins| ins.address == addr).unwrap_or(0);
+        // Get current program counter
+        if let Ok(registers) = debugger.get_registers() {
+            if let Some(pc) = registers.get(Register::Pc) {
+                // How many instructions to display (based on height)
+                let count = inner_area.height as usize;
                 
-                // Convert instructions to ListItems
-                let items: Vec<ListItem> = instructions.iter().enumerate().map(|(idx, ins)| {
-                    // Check if this is the current instruction or selected
-                    let is_current = ins.address == addr;
-                    let is_selected = selected_index.map_or(false, |selected| selected == idx);
-                    
-                    // Style based on whether it's current or selected
-                    let style = if is_current && is_selected {
-                        Style::default().fg(Color::Black).bg(Color::Yellow)
-                    } else if is_current {
-                        Style::default().fg(Color::Yellow)
-                    } else if is_selected {
-                        Style::default().fg(Color::Blue)
-                    } else {
-                        Style::default().fg(Color::Gray)
-                    };
-                    
-                    // Format the instruction line
-                    let line = format!(
-                        "{:#016x}: {:12} {}", 
-                        ins.address, 
-                        ins.hex_bytes(), 
-                        ins.text
-                    );
-                    
-                    ListItem::new(vec![Spans::from(vec![Span::styled(
-                        line,
-                        style,
-                    )])])
-                }).collect();
+                // Try to put the current instruction in the middle
+                let context_before = count / 2;
+                let context_after = count - context_before - 1;
                 
-                // Create and render the list
-                let list = List::new(items)
-                    .highlight_symbol(">> ")
-                    .style(Style::default().fg(Color::White));
-                
-                f.render_widget(list, inner_area);
-            } else {
-                // Show error message if disassembly fails
-                let message = Paragraph::new("Could not disassemble at this address")
-                    .style(Style::default().fg(Color::Red))
-                    .wrap(Wrap { trim: true });
-                f.render_widget(message, inner_area);
+                // Get disassembly with context
+                if let Ok(instructions) = debugger.get_disassembly_context(pc, context_before, context_after) {
+                    // Find the index of the current instruction
+                    let _current_idx = instructions.iter().position(|ins| ins.address == pc).unwrap_or_default();
+                    
+                    // Convert instructions to ListItems
+                    let items: Vec<ListItem> = instructions.iter().enumerate().map(|(idx, ins)| {
+                        // Check if this is the current instruction or selected
+                        let is_current = ins.address == pc;
+                        let is_selected = selected_index == Some(idx);
+                        
+                        // Style based on whether it's current or selected
+                        let style = if is_current && is_selected {
+                            Style::default().fg(Color::Black).bg(Color::Yellow)
+                        } else if is_current {
+                            Style::default().fg(Color::Yellow)
+                        } else if is_selected {
+                            Style::default().fg(Color::Blue)
+                        } else {
+                            Style::default().fg(Color::Gray)
+                        };
+                        
+                        // Format the instruction line
+                        let line = format!(
+                            "{:#016x}: {:12} {}", 
+                            ins.address, 
+                            ins.hex_bytes(), 
+                            ins.text
+                        );
+                        
+                        ListItem::new(Line::from(vec![Span::styled(
+                            line,
+                            style,
+                        )]))
+                    }).collect();
+                    
+                    // Create and render the list
+                    let list = List::new(items)
+                        .highlight_symbol(">> ")
+                        .style(Style::default().fg(Color::White));
+                    
+                    f.render_widget(list, inner_area);
+                } else {
+                    // Show error message if disassembly fails
+                    let message = Paragraph::new("Could not disassemble at this address")
+                        .style(Style::default().fg(Color::Red))
+                        .wrap(Wrap { trim: true });
+                    f.render_widget(message, inner_area);
+                }
             }
         } else {
             // Show message when no address is available
@@ -833,6 +870,12 @@ impl DisassemblyView {
 /// View for the trace display (function call tracing)
 pub struct TraceView;
 
+impl Default for TraceView {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl TraceView {
     pub fn new() -> Self {
         Self
@@ -840,10 +883,10 @@ impl TraceView {
     
     pub fn render<B: Backend>(&self, f: &mut Frame<B>, area: Rect, app: &App) {
         let block = Block::default()
-            .title(Span::styled(
+            .title(Line::from(Span::styled(
                 "Function Call Trace",
                 Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD),
-            ))
+            )))
             .borders(Borders::ALL)
             .border_style(Style::default().fg(if app.current_view == View::Trace {
                 Color::Green
@@ -875,7 +918,7 @@ impl TraceView {
                                     Style::default()
                                 };
                                 
-                                ListItem::new(call.clone()).style(style)
+                                ListItem::new(Line::from(vec![Span::styled(call.clone(), style)]))
                             })
                             .collect();
                         
@@ -948,10 +991,10 @@ pub fn draw_trace_view<B: Backend>(
     
     // Draw statistics in the bottom section
     let block = Block::default()
-        .title(Span::styled(
+        .title(Line::from(Span::styled(
             "Call Statistics",
             Style::default().fg(Color::Cyan),
-        ))
+        )))
         .borders(Borders::ALL);
     
     let inner_stats_area = block.inner(chunks[1]);
@@ -1018,6 +1061,12 @@ pub fn draw_trace_view<B: Backend>(
 /// View for the variables display
 pub struct VariablesView;
 
+impl Default for VariablesView {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl VariablesView {
     pub fn new() -> Self {
         Self
@@ -1025,10 +1074,10 @@ impl VariablesView {
     
     pub fn render<B: Backend>(&self, f: &mut Frame<B>, area: Rect, app: &App) {
         let block = Block::default()
-            .title(Span::styled(
+            .title(Line::from(Span::styled(
                 "Variables",
                 Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD),
-            ))
+            )))
             .borders(Borders::ALL)
             .border_style(Style::default().fg(if app.current_view == View::Variables {
                 Color::Green
@@ -1050,12 +1099,12 @@ impl VariablesView {
                 
                 // First, show watch expressions if any
                 if !app.watch_expressions.is_empty() {
-                    items.push(ListItem::new(vec![Line::from(vec![
+                    items.push(ListItem::new(Line::from(vec![
                         Span::styled("Watched Expressions", Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD))
-                    ])].into_iter().collect::<Vec<Line>>()));
+                    ])));
                     
                     // Get frame variables before we drop the debugger
-                    let frame_vars = debugger.get_variables_by_frame(frame_index);
+                    let _frame_vars = debugger.get_variables_by_frame(frame_index);
                     
                     // Release the immutable borrow to evaluate expressions
                     drop(debugger);
@@ -1071,78 +1120,78 @@ impl VariablesView {
                             format!("{} = <unavailable>", expr)
                         };
                         
-                        items.push(ListItem::new(vec![Line::from(vec![
+                        items.push(ListItem::new(Line::from(vec![
                             Span::styled(expr_result, Style::default().fg(Color::LightCyan))
-                        ])].into_iter().collect::<Vec<Line>>()));
+                        ])));
                     }
                     
                     // Add a separator
-                    items.push(ListItem::new(vec![Line::from(vec![
+                    items.push(ListItem::new(Line::from(vec![
                         Span::styled("─".repeat(inner_area.width as usize), Style::default().fg(Color::DarkGray))
-                    ])].into_iter().collect::<Vec<Line>>()));
+                    ])));
                     
                     // Add a header for regular variables
-                    items.push(ListItem::new(vec![Line::from(vec![
+                    items.push(ListItem::new(Line::from(vec![
                         Span::styled("Local Variables", Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD))
-                    ])].into_iter().collect::<Vec<Line>>()));
+                    ])));
                     
                     // Re-acquire the debugger to show variables
                     if let Ok(debugger) = app.debugger.try_lock() {
                         // Get variables again with the new lock
-                        let frame_vars = debugger.get_variables_by_frame(frame_index);
+                        let _frame_vars = debugger.get_variables_by_frame(frame_index);
                         
-                        if !frame_vars.is_empty() {
-                            for var in frame_vars {
+                        if !_frame_vars.is_empty() {
+                            for var in _frame_vars {
                                 // Format the variable for display
                                 let mut line_style = Style::default();
                                 if var.has_changed() {
                                     line_style = line_style.fg(Color::Yellow);
                                 }
                                 
-                                items.push(ListItem::new(vec![Line::from(vec![
+                                items.push(ListItem::new(Line::from(vec![
                                     Span::styled(var.format(), line_style)
-                                ])].into_iter().collect::<Vec<Line>>()));
+                                ])));
                             }
                         } else {
-                            items.push(ListItem::new(vec![Line::from(vec![
+                            items.push(ListItem::new(Line::from(vec![
                                 Span::styled("No local variables in this frame", Style::default().fg(Color::Gray))
-                            ])].into_iter().collect::<Vec<Line>>()));
+                            ])));
                         }
                     } else {
                         // Couldn't reacquire the debugger
-                        items.push(ListItem::new(vec![Line::from(vec![
+                        items.push(ListItem::new(Line::from(vec![
                             Span::styled("Cannot access debugger to show variables", Style::default().fg(Color::Red))
-                        ])].into_iter().collect::<Vec<Line>>()));
+                        ])));
                     }
                 } else {
                     // No watch expressions - just show variables
                     // Get variables for the current frame
-                    let frame_vars = debugger.get_variables_by_frame(frame_index);
+                    let _frame_vars = debugger.get_variables_by_frame(frame_index);
                     
-                    if !frame_vars.is_empty() {
-                        for var in frame_vars {
+                    if !_frame_vars.is_empty() {
+                        for var in _frame_vars {
                             // Format the variable for display
                             let mut line_style = Style::default();
                             if var.has_changed() {
                                 line_style = line_style.fg(Color::Yellow);
                             }
                             
-                            items.push(ListItem::new(vec![Line::from(vec![
+                            items.push(ListItem::new(Line::from(vec![
                                 Span::styled(var.format(), line_style)
-                            ])].into_iter().collect::<Vec<Line>>()));
+                            ])));
                         }
                     } else {
-                        items.push(ListItem::new(vec![Line::from(vec![
+                        items.push(ListItem::new(Line::from(vec![
                             Span::styled("No variables available in this frame", Style::default().fg(Color::Gray))
-                        ])].into_iter().collect::<Vec<Line>>()));
+                        ])));
                     }
                 }
                 
                 // If no items to display at all
                 if items.is_empty() {
-                    items.push(ListItem::new(vec![Line::from(vec![
+                    items.push(ListItem::new(Line::from(vec![
                         Span::styled("No variables or watch expressions available", Style::default().fg(Color::Gray))
-                    ])].into_iter().collect::<Vec<Line>>()));
+                    ])));
                 }
                 
                 let list = List::new(items)
@@ -1163,4 +1212,31 @@ impl VariablesView {
             }
         }
     }
+}
+
+/// Draw code editor view with line numbers and current line highlighted
+#[allow(dead_code)]
+pub fn draw_code_view<B: Backend>(f: &mut Frame<B>, area: Rect, lines: &[String], selected_line: Option<usize>) {
+    let items: Vec<ListItem> = lines
+        .iter()
+        .enumerate()
+        .map(|(i, line)| {
+            let style = if selected_line == Some(i) {
+                Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)
+            } else {
+                Style::default()
+            };
+            
+            ListItem::new(Line::from(line.clone())).style(style)
+        })
+        .collect();
+
+    let list = List::new(items)
+        .block(Block::default()
+            .borders(Borders::ALL)
+            .title("Code")
+            .title_alignment(Alignment::Center))
+        .highlight_style(Style::default().add_modifier(Modifier::BOLD));
+    
+    f.render_widget(list, area);
 }

@@ -12,13 +12,14 @@ use std::sync::mpsc;
 
 use crate::tui::app::{App, View, ActiveBlock, LogFilter};
 use crate::tui::views::{CodeView, CommandView, draw_memory_view, draw_thread_view, draw_call_stack_view, draw_registers_view, draw_trace_view, VariablesView};
-use crate::debugger::memory::MemoryFormat;
 
 /// Set up log capturing for UI display
 pub fn setup_log_capture() -> mpsc::Receiver<String> {
     let (_tx, rx) = mpsc::channel();
     
     // Create a custom logger that sends log messages to our channel
+    /// Logger that sends messages to a channel
+    #[allow(dead_code)]
     struct ChannelLogger {
         sender: mpsc::Sender<String>,
     }
@@ -188,7 +189,7 @@ fn draw_main_area<B: Backend>(f: &mut Frame<B>, app: &mut App, area: Rect) {
                     .split(area);
                 
                 // Display memory data
-                draw_memory_view(f, app, chunks[0], Some(&data), address);
+                draw_memory_view(f, app, chunks[0], Some(data), address);
                 
                 // Display format selector
                 let format_names = [
@@ -314,7 +315,7 @@ fn draw_status_bar<B: Backend>(f: &mut Frame<B>, app: &mut App, area: Rect) {
     
     // Add function info if available
     let function_info = if let Some(func) = &app.current_function {
-        format!("{}", func)
+        func.to_string()
     } else {
         "No function".to_string()
     };

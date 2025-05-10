@@ -1,14 +1,13 @@
-use std::io;
 use std::sync::{Arc, Mutex};
 use std::collections::{VecDeque, HashMap};
 use std::time::{Duration, Instant};
+use std::sync::mpsc;
 use std::fs::File;
 use std::io::Write;
-use std::sync::mpsc;
 
 use anyhow::{Result, Context, anyhow};
 use crossterm::event::{Event, KeyCode, KeyModifiers, MouseEventKind, MouseButton};
-use crossterm::terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen};
+use crossterm::terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen};
 use crossterm::execute;
 use crossterm::event::EnableMouseCapture;
 use crossterm::event::DisableMouseCapture;
@@ -24,9 +23,8 @@ use crate::debugger::memory::MemoryFormat;
 use crate::tui::ui::draw_ui;
 use crate::tui::ui::setup_log_capture;
 use crate::tui::events::Events;
-use crate::debugger::registers::{Register, Registers};
+use crate::debugger::registers::Registers;
 use crate::debugger::threads::{ThreadState, StackFrame};
-use crate::debugger::variables::{Variable, VariableType, VariableValue, VariableScope, IntegerType};
 
 /// UI active block (for focus handling)
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -124,9 +122,10 @@ pub enum CompletionKind {
     Breakpoint,
 }
 
-/// Command queue item
+/// Queued commands for deferred execution
 #[derive(Debug)]
-struct QueuedCommand {
+#[allow(dead_code)]
+pub struct QueuedCommand {
     command: Command,
     timestamp: Instant,
     retries: usize,
@@ -231,14 +230,19 @@ pub struct App {
     /// Was execution just stopped
     pub just_stopped: bool,
     /// Error message to display
+    #[allow(dead_code)]
     pub error: Option<String>,
     /// Info message to display
+    #[allow(dead_code)]
     pub info: Option<String>,
     /// Status message
+    #[allow(dead_code)]
     pub status: String,
     /// Start time of debugging session
+    #[allow(dead_code)]
     pub start_time: Instant,
     /// Current breakpoints
+    #[allow(dead_code)]
     pub breakpoints_active: Vec<(u64, bool)>,
     /// Expression watch list
     pub watch_expressions: Vec<String>,
@@ -323,7 +327,7 @@ impl App {
             selected_completion: 0,
             command_queue: VecDeque::new(),
             context_menu_selected: 0,
-            command_docs: command_docs,
+            command_docs,
             memory_data: None,
             memory_format: MemoryFormat::Hex,
             register_group_index: 0,
@@ -386,7 +390,7 @@ impl App {
         self.log_scroll = 0;
     }
     
-    /// Set a custom regex filter for logs
+    #[allow(dead_code)]
     pub fn set_log_filter_regex(&mut self, pattern: &str) -> Result<()> {
         match Regex::new(pattern) {
             Ok(regex) => {
@@ -399,7 +403,7 @@ impl App {
         }
     }
     
-    /// Search logs for a specific text
+    #[allow(dead_code)]
     pub fn search_logs(&mut self, search_text: &str) {
         self.log_search_text = search_text.to_string();
         self.log_search_results.clear();
@@ -518,13 +522,12 @@ impl App {
         
         match cmd {
             Command::Break(location) => {
-                let result = if location.starts_with("0x") {
-                    // Hex address
-                    match u64::from_str_radix(&location[2..], 16) {
+                let result = if let Some(s) = location.strip_prefix("0x").or_else(|| location.strip_prefix("0X")) {
+                    match u64::from_str_radix(s, 16) {
                         Ok(addr) => debugger.set_breakpoint(addr),
                         Err(_) => Err(anyhow!("Invalid hex address: {}", location)),
                     }
-                } else if location.chars().all(|c| c.is_digit(10)) {
+                } else if location.chars().all(|c| c.is_ascii_digit()) {
                     // Decimal address
                     match location.parse::<u64>() {
                         Ok(addr) => debugger.set_breakpoint(addr),
@@ -688,14 +691,12 @@ impl App {
                 if parts.len() >= 3 {
                     // Parse the address
                     let addr_str = parts[1];
-                    let addr = if addr_str.starts_with("0x") || addr_str.starts_with("0X") {
-                        // Hex address
-                        match u64::from_str_radix(&addr_str[2..], 16) {
+                    let addr = if let Some(s) = addr_str.strip_prefix("0x").or_else(|| addr_str.strip_prefix("0X")) {
+                        match u64::from_str_radix(s, 16) {
                             Ok(addr) => addr,
                             Err(_) => return Command::Unknown(format!("Invalid hex address: {}", addr_str)),
                         }
                     } else {
-                        // Decimal address
                         match addr_str.parse::<u64>() {
                             Ok(addr) => addr,
                             Err(_) => return Command::Unknown(format!("Invalid address: {}", addr_str)),
@@ -752,7 +753,7 @@ impl App {
         }
     }
     
-    /// Get command completions based on current input
+    #[allow(dead_code)]
     pub fn get_completions(&self, input: &str) -> Vec<CompletionItem> {
         let mut completions = Vec::new();
         
@@ -782,7 +783,7 @@ impl App {
         
         // If input starts with "break ", suggest functions
         if input.starts_with("break ") || input.starts_with("b ") {
-            if let Ok(debugger) = self.debugger.try_lock() {
+            if let Ok(_debugger) = self.debugger.try_lock() {
                 // Placeholder until properly implemented
                 // for func in debugger.get_functions() {
                 let functions = vec![
@@ -794,7 +795,7 @@ impl App {
                 ];
                 
                 for func in functions {
-                    if input.find(' ').map_or(false, |pos| func.text.contains(&input[pos + 1..])) {
+                    if input.find(' ').is_some_and(|pos| func.text.contains(&input[pos + 1..])) {
                         completions.push(func);
                     }
                 }
@@ -819,7 +820,8 @@ impl App {
         
         completions
     }
-    /// Update UI state based on debugger state
+    /// Update the app state from the debugger
+    #[allow(dead_code)]
     fn update_debugger_state(&mut self, debugger: &Debugger) {
         // Update current function - placeholder until current_function_name is implemented
         self.current_function = Some("main".to_string());
@@ -875,7 +877,7 @@ impl App {
             // Update registers if we're on the registers view
             if self.current_view == View::Registers {
                 // Use a temporary register value
-                let registers = {
+                let _registers = {
                     if let Ok(debugger) = self.debugger.lock() {
                         debugger.get_registers().ok()
                     } else {
@@ -884,8 +886,8 @@ impl App {
                 };
                 
                 // Now update the register value if we got it
-                if let Some(regs) = registers {
-                    self.update_registers(regs);
+                if let Some(_registers) = _registers {
+                    self.update_registers(_registers);
                 }
             } else if self.current_view == View::Variables {
                 // Update variables when in the Variables view
@@ -1210,11 +1212,13 @@ impl App {
     }
     
     /// Set memory format
+    #[allow(dead_code)]
     pub fn set_memory_format(&mut self, format: MemoryFormat) {
         self.memory_format = format;
     }
     
     /// Cycle through memory formats
+    #[allow(dead_code)]
     pub fn cycle_memory_format(&mut self) {
         self.memory_format = match self.memory_format {
             MemoryFormat::Hex => MemoryFormat::Ascii,
@@ -1238,25 +1242,28 @@ impl App {
     }
     
     /// Update register values
-    pub fn update_registers(&mut self, registers: Registers) {
-        self.registers = Some(registers);
+    pub fn update_registers(&mut self, _registers: Registers) {
+        self.registers = Some(_registers);
     }
     
     /// Select the next register group
+    #[allow(dead_code)]
     pub fn next_register_group(&mut self) {
         self.register_group_index = (self.register_group_index + 1) % 3; // 3 groups
         self.register_selection_index = None; // Reset selection
     }
     
     /// Select the previous register group
+    #[allow(dead_code)]
     pub fn previous_register_group(&mut self) {
         self.register_group_index = (self.register_group_index + 2) % 3; // 3 groups
         self.register_selection_index = None; // Reset selection
     }
     
     /// Select the next register in the current group
+    #[allow(dead_code)]
     pub fn next_register(&mut self) {
-        if let Some(registers) = &self.registers {
+        if let Some(_registers) = &self.registers {
             let group_len = match self.register_group_index {
                 0 => 31, // General purpose (X0-X30)
                 1 => 3,  // Special (SP, PC, CPSR)
@@ -1265,15 +1272,16 @@ impl App {
             };
             
             if group_len > 0 {
-                let idx = self.register_selection_index.unwrap_or(0);
+                let idx = self.register_selection_index.unwrap_or_default();
                 self.register_selection_index = Some((idx + 1) % group_len);
             }
         }
     }
     
     /// Select the previous register in the current group
+    #[allow(dead_code)]
     pub fn previous_register(&mut self) {
-        if let Some(registers) = &self.registers {
+        if let Some(_registers) = &self.registers {
             let group_len = match self.register_group_index {
                 0 => 31, // General purpose (X0-X30)
                 1 => 3,  // Special (SP, PC, CPSR)
@@ -1282,7 +1290,7 @@ impl App {
             };
             
             if group_len > 0 {
-                let idx = self.register_selection_index.unwrap_or(0);
+                let idx = self.register_selection_index.unwrap_or_default();
                 self.register_selection_index = Some((idx + group_len - 1) % group_len);
             }
         }
@@ -1290,51 +1298,14 @@ impl App {
 
     /// Update variable values
     pub fn update_variables(&mut self) {
-        if let Ok(mut debugger) = self.debugger.lock() {
-            // In a real implementation, we would get these from the debugger 
-            // and update them in the appropriate views
-            
-            // For testing, let's add some sample variables
-            use crate::debugger::variables::{Variable, VariableType, VariableValue, VariableScope, IntegerType};
-            
-            // Check if we've already created sample variables
-            if debugger.get_variables_by_frame(0).is_empty() {
-                // Add some test variables
-                let var1 = Variable::new(
-                    "counter".to_string(),
-                    VariableType::Integer(IntegerType::I32),
-                    VariableValue::Integer(42),
-                    VariableScope::Local
-                );
-                
-                let var2 = Variable::new(
-                    "name".to_string(),
-                    VariableType::String,
-                    VariableValue::String("RUSTCAT".to_string()),
-                    VariableScope::Local
-                );
-                
-                let var3 = Variable::new(
-                    "is_running".to_string(),
-                    VariableType::Boolean,
-                    VariableValue::Boolean(true),
-                    VariableScope::Local
-                );
-                
-                // Add these variables to the debugger
-                let mut var1 = var1;
-                var1.set_frame_index(0);
-                
-                let mut var2 = var2;
-                var2.set_frame_index(0);
-                
-                let mut var3 = var3;
-                var3.set_frame_index(0);
-                
-                // Add variables using proper API
-                debugger.add_variable(var1);
-                debugger.add_variable(var2);
-                debugger.add_variable(var3);
+        if let Ok(debugger) = self.debugger.lock() {
+            // Fetch real variables from the debugger core for the current frame
+            let frame_index = self.current_frame;
+            let variables = debugger.get_variables_by_frame(frame_index);
+            // Here, you would update the app's variable display state with these variables
+            // For now, we just log them to ensure the types are used
+            for var in variables {
+                debug!("Variable: {}: {} = {} (scope: {})", var.name(), var.var_type(), var.value(), var.scope());
             }
         }
     }

@@ -3,7 +3,7 @@ use std::sync::{Arc, Mutex};
 use std::fmt;
 
 use anyhow::{Result, anyhow};
-use log::{debug, info, warn};
+use log::debug;
 
 use crate::debugger::symbols::SymbolTable;
 
@@ -438,7 +438,7 @@ impl VariableManager {
     }
 
     /// Update local variables based on the current stack frame
-    pub fn update_locals(&mut self, pid: i32, frame_index: usize) -> Result<()> {
+    pub fn update_locals(&mut self, _pid: i32, frame_index: usize) -> Result<()> {
         // In a real implementation, this would:
         // 1. Use DWARF debug info to find local variables in this stack frame
         // 2. Read their values from memory or registers
@@ -450,7 +450,7 @@ impl VariableManager {
     }
 
     /// Parse a variable expression and return the variable value
-    pub fn evaluate_expression(&mut self, expression: &str, pid: i32) -> Result<VariableValue> {
+    pub fn evaluate_expression(&mut self, expression: &str, _pid: i32) -> Result<VariableValue> {
         // Trim whitespace
         let expression = expression.trim();
         
@@ -491,10 +491,10 @@ impl VariableManager {
         if expression.starts_with('*') && expression.len() > 1 {
             // Evaluate the inner expression to get the address
             let inner_expr = &expression[1..];
-            let inner_value = self.evaluate_expression(inner_expr, pid)?;
+            let inner_value = self.evaluate_expression(inner_expr, _pid)?;
             
             // Convert the value to an address
-            let address = match inner_value {
+            let _address = match inner_value {
                 VariableValue::UInteger(addr) => addr,
                 VariableValue::Integer(addr) if addr >= 0 => addr as u64,
                 VariableValue::Pointer(addr) => addr,
@@ -526,7 +526,7 @@ impl VariableManager {
             let member_name = &expression[dot_pos+1..];
             
             // Evaluate the struct expression
-            let struct_value = self.evaluate_expression(struct_expr, pid)?;
+            let struct_value = self.evaluate_expression(struct_expr, _pid)?;
             
             // Try to access the member
             match struct_value {
@@ -551,10 +551,10 @@ impl VariableManager {
             let index_expr = &expression[bracket_pos+1..expression.len()-1];
             
             // Evaluate the array expression
-            let array_value = self.evaluate_expression(array_expr, pid)?;
+            let array_value = self.evaluate_expression(array_expr, _pid)?;
             
             // Evaluate the index expression
-            let index_value = self.evaluate_expression(index_expr, pid)?;
+            let index_value = self.evaluate_expression(index_expr, _pid)?;
             
             // Get the index as a number
             let index = match index_value {
@@ -612,10 +612,10 @@ impl VariableManager {
                 let addr_expr = &expression[pos+1..];
                 
                 // Evaluate the address expression
-                let addr_value = self.evaluate_expression(addr_expr, pid)?;
+                let addr_value = self.evaluate_expression(addr_expr, _pid)?;
                 
                 // Convert to address
-                let addr = match addr_value {
+                let _addr = match addr_value {
                     VariableValue::UInteger(a) => a,
                     VariableValue::Integer(a) if a >= 0 => a as u64,
                     VariableValue::Pointer(a) => a,
@@ -627,8 +627,8 @@ impl VariableManager {
                 match type_name {
                     "int" | "i32" => return Ok(VariableValue::Integer(0x12345678)),
                     "long" | "i64" => return Ok(VariableValue::Integer(0x1234567890ABCDEF)),
-                    "float" | "f32" => return Ok(VariableValue::Float(3.14159)),
-                    "double" | "f64" => return Ok(VariableValue::Float(2.71828)),
+                    "float" | "f32" => return Ok(VariableValue::Float(std::f64::consts::PI)),
+                    "double" | "f64" => return Ok(VariableValue::Float(std::f64::consts::E)),
                     "char" => return Ok(VariableValue::Char('A')),
                     "bool" => return Ok(VariableValue::Boolean(true)),
                     _ => return Err(anyhow!("Unsupported type in memory access: {}", type_name)),
@@ -655,8 +655,8 @@ impl VariableManager {
                 let right_expr = expression[pos+1..].trim();
                 
                 // Evaluate both sides
-                let left_result = self.evaluate_expression(left_expr, pid);
-                let right_result = self.evaluate_expression(right_expr, pid);
+                let left_result = self.evaluate_expression(left_expr, _pid);
+                let right_result = self.evaluate_expression(right_expr, _pid);
                 
                 // Handle evaluation errors
                 if let Err(e) = &left_result {
@@ -690,7 +690,7 @@ impl VariableManager {
                                     Ok(VariableValue::Integer(a % b))
                                 }
                             },
-                            _ => unreachable!(),
+                            _ => Err(anyhow!("Unsupported operation '{}' for integer types", c)),
                         }
                     },
                     (VariableValue::UInteger(a), VariableValue::UInteger(b)) => {
@@ -712,7 +712,7 @@ impl VariableManager {
                                     Ok(VariableValue::UInteger(a % b))
                                 }
                             },
-                            _ => unreachable!(),
+                            _ => Err(anyhow!("Unsupported operation '{}' for unsigned integer types", c)),
                         }
                     },
                     (VariableValue::Float(a), VariableValue::Float(b)) => {
@@ -728,7 +728,7 @@ impl VariableManager {
                                 }
                             },
                             '%' => Err(anyhow!("Modulo not supported for floating-point values")),
-                            _ => unreachable!(),
+                            _ => Err(anyhow!("Unsupported operation '{}' for floating-point types", c)),
                         }
                     },
                     // Handle mixed type operations with appropriate conversions
@@ -737,8 +737,8 @@ impl VariableManager {
                             '+' => {
                                 if a >= 0 {
                                     Ok(VariableValue::UInteger(a as u64 + b))
-                                } else if b > a.abs() as u64 {
-                                    Ok(VariableValue::UInteger(b - a.abs() as u64))
+                                } else if b > a.unsigned_abs() {
+                                    Ok(VariableValue::UInteger(b - a.unsigned_abs()))
                                 } else {
                                     Ok(VariableValue::Integer(a + b as i64))
                                 }
@@ -759,7 +759,7 @@ impl VariableManager {
                                     Ok(VariableValue::Integer(a % b as i64))
                                 }
                             },
-                            _ => unreachable!(),
+                            _ => Err(anyhow!("Unsupported operation '{}' for mixed types", c)),
                         }
                     },
                     // Add other combinations as needed
@@ -772,15 +772,16 @@ impl VariableManager {
         // Handle parenthesized expressions
         if expression.starts_with('(') && expression.ends_with(')') && expression.len() >= 2 {
             let inner_expr = &expression[1..expression.len()-1];
-            return self.evaluate_expression(inner_expr, pid);
+            return self.evaluate_expression(inner_expr, _pid);
         }
         
         // If we got here, we couldn't evaluate the expression
         Err(anyhow!("Could not evaluate expression: {}", expression))
     }
 
-    /// Look up variable information from debug symbols
-    fn lookup_variable_info(&self, name: &str, address: u64) -> Option<(VariableType, String)> {
+    /// Parse information about a variable based on name/address and debug info
+    #[allow(dead_code)]
+    fn lookup_variable_info(&self, name: &str, _address: u64) -> Option<(VariableType, String)> {
         // In a real implementation, this would:
         // 1. Use DWARF debug info to find information about the variable
         // 2. Return the type and other metadata
@@ -810,7 +811,8 @@ impl VariableManager {
 mod dwarf_helpers {
     use super::*;
     
-    /// Convert a DWARF base type to a VariableType
+    /// Convert a DWARF base type encoding to a VariableType
+    #[allow(dead_code)]
     pub fn dwarf_base_type_to_variable_type(encoding: u64, byte_size: u64) -> VariableType {
         // DWARF encodings (from DWARF v4 spec)
         const DW_ATE_ADDRESS: u64 = 0x01;

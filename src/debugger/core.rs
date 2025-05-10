@@ -7,8 +7,8 @@ use std::time::Duration;
 use anyhow::{anyhow, Result};
 use log::{info, warn, debug, error};
 
-use crate::debugger::breakpoint::{Breakpoint, BreakpointManager, BreakpointType, ConditionEvaluator};
-use crate::debugger::memory::{MemoryMap, MemoryFormat};
+use crate::debugger::breakpoint::{Breakpoint, BreakpointManager, ConditionEvaluator};
+use crate::debugger::memory::{MemoryMap};
 use crate::debugger::registers::{Registers, Register};
 use crate::debugger::symbols::SymbolTable;
 use crate::debugger::threads::{ThreadManager, ThreadState, StackFrame};
@@ -30,6 +30,7 @@ pub enum DebuggerState {
     /// Process is stopped at a breakpoint
     Stopped,
     /// Process has exited
+    #[allow(dead_code)]
     Exited,
 }
 
@@ -55,7 +56,8 @@ pub struct Debugger {
     thread_manager: ThreadManager,
     /// DWARF parser for debug information
     dwarf_parser: DwarfParser<'static>,
-    /// Start time of the debugging session
+    /// When the debugging started
+    #[allow(dead_code)]
     start_time: Instant,
     /// Current breakpoint address (if stopped at one)
     current_breakpoint: Option<u64>,
@@ -200,8 +202,8 @@ impl Debugger {
                 self.state = DebuggerState::Stopped;
                 
                 // Check if we hit a breakpoint
-                if let Some(registers) = self.get_registers().ok() {
-                    if let Some(pc) = registers.get(crate::debugger::registers::Register::PC) {
+                if let Ok(registers) = self.get_registers() {
+                    if let Some(pc) = registers.get(Register::Pc) {
                         // In x86, PC would point after the breakpoint instruction
                         // In ARM64, breakpoints are handled differently, but the concept is similar
                         let potential_bp_addr = pc - 1;
@@ -476,7 +478,7 @@ impl Debugger {
             let bp_addr = self.current_breakpoint.take();
             
             // Get current instruction for analysis
-            let current_instruction = if let Ok(current_pc) = self.get_registers().map(|r| r.get(Register::PC).unwrap_or(0)) {
+            let current_instruction = if let Ok(current_pc) = self.get_registers().map(|r| r.get(Register::Pc).unwrap_or_default()) {
                 self.disassemble(current_pc, 1).ok().and_then(|ins| ins.first().cloned())
             } else {
                 None
@@ -515,7 +517,7 @@ impl Debugger {
                     let target_addr = instruction.branch_target.unwrap_or_else(|| {
                         // For indirect calls, we need to look at the current PC
                         if let Ok(registers) = self.get_registers() {
-                            registers.get(Register::PC).unwrap_or(0)
+                            registers.get(Register::Pc).unwrap_or_default()
                         } else {
                             0
                         }
@@ -574,7 +576,7 @@ impl Debugger {
                 
                 // Check if the step caused a function call or return
                 if let Ok(registers) = self.get_registers() {
-                    let current_pc = registers.get(Register::PC).unwrap_or(0);
+                    let _current_pc = registers.get(Register::Pc).unwrap_or_default();
                     // Disassemble the instruction we just executed
                     if let Ok(instructions) = self.disassemble(addr, 1) {
                         if let Some(instruction) = instructions.first() {
@@ -694,6 +696,7 @@ impl Debugger {
     }
 
     /// Handle a thread stop event
+    #[allow(dead_code)]
     fn handle_thread_stop(&mut self, tid: u64, address: u64, signal: Option<i32>) -> Result<()> {
         debug!("Thread {} stopped at 0x{:x}", tid, address);
         
@@ -720,8 +723,8 @@ impl Debugger {
         // Note: in a real implementation, the platform would have a read_registers function
         // For now, we'll create some dummy registers
         let mut registers = Registers::new();
-        registers.set(crate::debugger::registers::Register::PC, address);
-        registers.set(crate::debugger::registers::Register::SP, 0xFFFF_FFFF_FFFF_0000);
+        registers.set(crate::debugger::registers::Register::Pc, address);
+        registers.set(crate::debugger::registers::Register::Sp, 0xFFFF_FFFF_FFFF_0000);
         registers.set(crate::debugger::registers::Register::X29, 0xFFFF_FFFF_FFFF_0000);
         
         if let Some(thread) = self.thread_manager.get_thread_mut(tid) {
@@ -733,13 +736,13 @@ impl Debugger {
             // or if this thread is at a breakpoint (prioritize breakpoints)
             if self.thread_manager.current_thread_id().is_none() || 
                (is_at_breakpoint && !self.thread_manager.any_thread_at_breakpoint()) {
-                self.thread_manager.set_current_thread(tid);
+                let _ = self.thread_manager.set_current_thread(tid);
             }
             
             // Update call stack if this is important thread (current or at breakpoint)
             if self.thread_manager.current_thread_id() == Some(tid) || is_at_breakpoint {
                 if let Ok(stack) = self.build_call_stack(tid) {
-                    self.thread_manager.update_call_stack(tid, stack);
+                    let _ = self.thread_manager.update_call_stack(tid, stack);
                 }
             }
         }
@@ -753,6 +756,7 @@ impl Debugger {
     }
     
     /// Build a call stack for a thread
+    #[allow(dead_code)]
     fn build_call_stack(&self, tid: u64) -> Result<Vec<StackFrame>> {
         debug!("Building call stack for thread {}", tid);
         
@@ -883,8 +887,8 @@ impl Debugger {
     
     /// Resume a specific thread
     pub fn resume_thread(&mut self, tid: u64) -> Result<()> {
-        if let Some(pid) = self.pid {
-            if self.thread_manager.resume_thread(tid) {
+        if let Some(_pid) = self.pid {
+            if self.thread_manager.resume_thread(tid)? {
                 // Note: in a real implementation, the platform would have a resume_thread function
                 // For now, we'll just log the operation
                 info!("Resumed thread {}", tid);
@@ -899,8 +903,8 @@ impl Debugger {
     
     /// Suspend a specific thread
     pub fn suspend_thread(&mut self, tid: u64) -> Result<()> {
-        if let Some(pid) = self.pid {
-            if self.thread_manager.suspend_thread(tid) {
+        if let Some(_pid) = self.pid {
+            if self.thread_manager.suspend_thread(tid)? {
                 // Note: in a real implementation, the platform would have a suspend_thread function
                 // For now, we'll just log the operation
                 info!("Suspended thread {}", tid);
@@ -914,6 +918,7 @@ impl Debugger {
     }
     
     /// Update the list of threads in the target process
+    #[allow(dead_code)]
     fn update_threads(&mut self) -> Result<()> {
         if let Some(pid) = self.pid {
             // Note: in a real implementation, the platform would have a get_thread_ids function
@@ -923,7 +928,7 @@ impl Debugger {
             debug!("Found {} threads in process {}", thread_ids.len(), pid);
             
             // Update thread manager
-            self.thread_manager.update_threads(thread_ids);
+            let _ = self.thread_manager.update_threads(thread_ids);
             
             Ok(())
         } else {
@@ -933,9 +938,9 @@ impl Debugger {
 
     /// Disassemble instructions at a specific address
     pub fn disassemble(&self, address: u64, count: usize) -> Result<Vec<Instruction>> {
-        if let Some(pid) = self.pid {
+        if let Some(_pid) = self.pid {
             // Disassemble using our disassembler
-            let mut instructions = self.disassembler.disassemble(address, count)?;
+            let instructions = self.disassembler.disassemble(address, count)?;
             
             // Check if any of these addresses have breakpoints
             let result = instructions.into_iter().map(|mut ins| {
@@ -957,7 +962,7 @@ impl Debugger {
     pub fn disassemble_current(&self, count: usize) -> Result<Vec<Instruction>> {
         // Get the current PC value from registers
         if let Ok(registers) = self.get_registers() {
-            if let Some(pc) = registers.get(Register::PC) {
+            if let Some(pc) = registers.get(Register::Pc) {
                 // Disassemble at the current PC
                 self.disassemble(pc, count)
             } else {

@@ -79,6 +79,7 @@ pub mod dummy {
 
 // Re-export the appropriate implementation based on platform
 #[cfg(target_os = "macos")]
+#[allow(unused_imports)]
 pub use macos::MacosDebugger;
 
 #[cfg(not(target_os = "macos"))]

@@ -11,9 +11,11 @@ pub enum Register {
     X24, X25, X26, X27, X28, X29, X30,
     
     // Special registers
-    SP,    // Stack pointer
-    PC,    // Program counter
-    CPSR,  // Current program status register
+    Sp,    // Stack pointer
+    Pc,    // Program counter
+    #[allow(dead_code)]
+    Lr,    // Link register
+    Cpsr,  // Current program status register
     
     // FP/SIMD registers (128-bit)
     Q0, Q1, Q2, Q3, Q4, Q5, Q6, Q7,
@@ -57,9 +59,10 @@ impl Register {
             Register::X28 => "x28",
             Register::X29 => "fp", // Frame pointer
             Register::X30 => "lr", // Link register
-            Register::SP => "sp",
-            Register::PC => "pc",
-            Register::CPSR => "cpsr",
+            Register::Sp => "sp",
+            Register::Pc => "pc",
+            Register::Lr => "lr",
+            Register::Cpsr => "cpsr",
             Register::Q0 => "q0",
             Register::Q1 => "q1",
             Register::Q2 => "q2",
@@ -119,9 +122,10 @@ impl Register {
             Register::X28 => Some("callee saved"),
             Register::X29 => Some("frame pointer"),
             Register::X30 => Some("link register"),
-            Register::SP => Some("stack pointer"),
-            Register::PC => Some("program counter"),
-            Register::CPSR => Some("status register"),
+            Register::Sp => Some("stack pointer"),
+            Register::Pc => Some("program counter"),
+            Register::Lr => Some("link register"),
+            Register::Cpsr => Some("status register"),
             _ => None,
         }
     }
@@ -138,7 +142,7 @@ impl Register {
             Register::X24 | Register::X25 | Register::X26 | Register::X27 |
             Register::X28 | Register::X29 | Register::X30 => RegisterGroup::General,
             
-            Register::SP | Register::PC | Register::CPSR => RegisterGroup::Special,
+            Register::Sp | Register::Pc | Register::Lr | Register::Cpsr => RegisterGroup::Special,
             
             Register::Q0 | Register::Q1 | Register::Q2 | Register::Q3 |
             Register::Q4 | Register::Q5 | Register::Q6 | Register::Q7 |
@@ -186,15 +190,15 @@ impl Register {
             28 => Some(Register::X28),
             29 => Some(Register::X29), // Frame pointer (FP)
             30 => Some(Register::X30), // Link register (LR)
-            31 => Some(Register::SP),  // Stack pointer (SP)
-            32 => Some(Register::PC),  // Program counter (PC)
-            33 => Some(Register::CPSR), // CPSR
+            31 => Some(Register::Sp),  // Stack pointer (SP)
+            32 => Some(Register::Pc),  // Program counter (PC)
+            33 => Some(Register::Cpsr), // CPSR
             _ => None,
         }
     }
     
     /// Get the arm64 thread state index for this register
-    pub fn to_arm64_index(&self) -> Option<usize> {
+    pub fn to_arm64_index(self) -> Option<usize> {
         match self {
             Register::X0 => Some(0),
             Register::X1 => Some(1),
@@ -227,9 +231,10 @@ impl Register {
             Register::X28 => Some(28),
             Register::X29 => Some(29),
             Register::X30 => Some(30),
-            Register::SP => Some(31),
-            Register::PC => Some(32),
-            Register::CPSR => Some(33),
+            Register::Sp => Some(31),
+            Register::Pc => Some(32),
+            Register::Lr => Some(33),
+            Register::Cpsr => Some(34),
             _ => None, // SIMD registers use a different state type
         }
     }
@@ -250,7 +255,7 @@ impl Register {
     
     /// Get all special registers
     pub fn special_registers() -> Vec<Register> {
-        vec![Register::SP, Register::PC, Register::CPSR]
+        vec![Register::Sp, Register::Pc, Register::Cpsr]
     }
     
     /// Get all SIMD registers
@@ -354,12 +359,12 @@ impl Registers {
     
     /// Get the stack pointer value
     pub fn get_stack_pointer(&self) -> Option<u64> {
-        self.get(Register::SP)
+        self.get(Register::Sp)
     }
     
     /// Get the program counter value
     pub fn get_program_counter(&self) -> Option<u64> {
-        self.get(Register::PC)
+        self.get(Register::Pc)
     }
     
     /// Get the link register (return address)
