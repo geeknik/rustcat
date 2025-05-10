@@ -1,0 +1,4 @@
+# Allow dead code warnings for now as the project is still in development
+dead-code-structural-match = true
+# Treat all the `allow(dead_code)` attributes as if they were `allow(clippy::dead_code)`
+allow-unwrap-in-tests = true 

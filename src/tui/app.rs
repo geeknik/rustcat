@@ -230,14 +230,19 @@ pub struct App {
     /// Was execution just stopped
     pub just_stopped: bool,
     /// Error message to display
+    #[allow(dead_code)]
     pub error: Option<String>,
     /// Info message to display
+    #[allow(dead_code)]
     pub info: Option<String>,
     /// Status message
+    #[allow(dead_code)]
     pub status: String,
     /// Start time of debugging session
+    #[allow(dead_code)]
     pub start_time: Instant,
     /// Current breakpoints
+    #[allow(dead_code)]
     pub breakpoints_active: Vec<(u64, bool)>,
     /// Expression watch list
     pub watch_expressions: Vec<String>,
@@ -385,7 +390,7 @@ impl App {
         self.log_scroll = 0;
     }
     
-    /// Set a custom regex filter for logs
+    #[allow(dead_code)]
     pub fn set_log_filter_regex(&mut self, pattern: &str) -> Result<()> {
         match Regex::new(pattern) {
             Ok(regex) => {
@@ -398,7 +403,7 @@ impl App {
         }
     }
     
-    /// Search logs for a specific text
+    #[allow(dead_code)]
     pub fn search_logs(&mut self, search_text: &str) {
         self.log_search_text = search_text.to_string();
         self.log_search_results.clear();
@@ -748,7 +753,7 @@ impl App {
         }
     }
     
-    /// Get command completions based on current input
+    #[allow(dead_code)]
     pub fn get_completions(&self, input: &str) -> Vec<CompletionItem> {
         let mut completions = Vec::new();
         
@@ -1207,11 +1212,13 @@ impl App {
     }
     
     /// Set memory format
+    #[allow(dead_code)]
     pub fn set_memory_format(&mut self, format: MemoryFormat) {
         self.memory_format = format;
     }
     
     /// Cycle through memory formats
+    #[allow(dead_code)]
     pub fn cycle_memory_format(&mut self) {
         self.memory_format = match self.memory_format {
             MemoryFormat::Hex => MemoryFormat::Ascii,
@@ -1240,18 +1247,21 @@ impl App {
     }
     
     /// Select the next register group
+    #[allow(dead_code)]
     pub fn next_register_group(&mut self) {
         self.register_group_index = (self.register_group_index + 1) % 3; // 3 groups
         self.register_selection_index = None; // Reset selection
     }
     
     /// Select the previous register group
+    #[allow(dead_code)]
     pub fn previous_register_group(&mut self) {
         self.register_group_index = (self.register_group_index + 2) % 3; // 3 groups
         self.register_selection_index = None; // Reset selection
     }
     
     /// Select the next register in the current group
+    #[allow(dead_code)]
     pub fn next_register(&mut self) {
         if let Some(_registers) = &self.registers {
             let group_len = match self.register_group_index {
@@ -1269,6 +1279,7 @@ impl App {
     }
     
     /// Select the previous register in the current group
+    #[allow(dead_code)]
     pub fn previous_register(&mut self) {
         if let Some(_registers) = &self.registers {
             let group_len = match self.register_group_index {

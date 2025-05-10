@@ -1,0 +1,2 @@
+# Ignore dead code warnings since this project is in active development
+dead-code = { level = "allow" } 

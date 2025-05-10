@@ -58,6 +58,7 @@ impl MemoryView {
         Self
     }
 
+    #[allow(dead_code)]
     pub fn render<B: Backend>(&self, f: &mut Frame<B>, area: Rect) {
         let text = vec![
             Line::from("Memory View - Hex and ASCII"),
@@ -88,6 +89,7 @@ impl RegistersView {
         Self
     }
 
+    #[allow(dead_code)]
     pub fn render<B: Backend>(&self, f: &mut Frame<B>, area: Rect) {
         let registers = [
             "rax: 0x0000000100000f24",
@@ -131,6 +133,7 @@ impl StackView {
         Self
     }
 
+    #[allow(dead_code)]
     pub fn render<B: Backend>(&self, f: &mut Frame<B>, area: Rect) {
         let stack_frames = [
             "#0 0x0000000100000f24 main()",
@@ -166,6 +169,7 @@ impl ThreadsView {
         Self
     }
 
+    #[allow(dead_code)]
     pub fn render<B: Backend>(&self, f: &mut Frame<B>, area: Rect) {
         let threads = [
             "Thread 0x1103 (main)",
@@ -782,7 +786,7 @@ impl DisassemblyView {
         Self {}
     }
     
-    /// Render the disassembly view
+    #[allow(dead_code)]
     pub fn render<B: Backend>(&self, f: &mut Frame<B>, area: Rect, debugger: &Debugger, _current_address: Option<u64>, selected_index: Option<usize>) {
         // Create a block for the view
         let block = Block::default()
