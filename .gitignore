@@ -1,0 +1,85 @@
+# Rust-specific ignores
+/target/
+**/*.rs.bk
+Cargo.lock
+# Uncomment the line below if this is an application (not a library)
+# !Cargo.lock
+
+# Debug and release artifacts
+debug/
+release/
+
+# Editor and IDE files
+.idea/
+.vscode/
+*.iml
+*.swp
+*.swo
+*~
+.project
+.classpath
+.settings/
+*.sublime-workspace
+*.sublime-project
+.atom/
+.dir-locals.el
+.history/
+.ionide/
+
+# OS-specific files
+## macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+Icon
+._*
+.Spotlight-V100
+.Trashes
+
+## Windows
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+$RECYCLE.BIN/
+*.cab
+*.msi
+*.msm
+*.msp
+*.lnk
+
+## Linux
+*~
+.fuse_hidden*
+.directory
+.Trash-*
+.nfs*
+
+# Backup files
+*.bak
+*.tmp
+*.temp
+*.orig
+*.old
+
+# Artifacts and logs
+*.log
+logs/
+temp/
+tmp/
+
+# Security-sensitive files
+.env
+.env.*
+!.env.example
+.aws/
+.credentials
+*.pem
+*.key
+*.der
+*.p12
+*.pfx
+*.crt
+*.cer
+*/secrets/*
+*_auth_token
+*_api_key

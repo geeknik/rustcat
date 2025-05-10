@@ -1,0 +1,49 @@
+[package]
+name = "rustcat"
+version = "0.1.0"
+edition = "2021"
+description = "A MacOS-Only, Rust-Based, Fast-as-Hell Native Debugger"
+authors = ["geeknik"]
+license = "MIT"
+repository = "https://github.com/geeknik/rustcat"
+
+[dependencies]
+# UI/TUI dependencies
+ratatui = "0.23.0"
+crossterm = "0.27.0"
+
+# Parsing libraries
+gimli = "0.27.3"
+object = "0.32.1"
+goblin = "0.7.1"
+mach2 = "0.4.1" 
+libc = "0.2.172"
+
+# Async runtime and utilities
+tokio = { version = "1.29.0", features = ["full"] }
+futures = "0.3.28"
+async-trait = "0.1.68"
+
+# Error handling and utilities
+thiserror = "1.0.41"
+anyhow = "1.0.72"
+log = "0.4.19"
+env_logger = "0.10.0"
+byteorder = "1.4.3"
+regex = "1.11.1"
+chrono = "0.4.41"
+
+[features]
+default = []
+debug_symbols = []
+
+[profile.release]
+lto = true
+codegen-units = 1
+panic = "abort"
+strip = true  # Strip symbols from binary
+opt-level = 3
+
+[profile.dev]
+debug = true
+opt-level = 0
