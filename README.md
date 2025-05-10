@@ -8,6 +8,8 @@ You're staring down the future of native code debugging on macOS ARM64. RUSTCAT 
 
 This is the debugger macOS should ship with, but doesn't. So we did it ourselves.
 
+![image](https://github.com/user-attachments/assets/b084aeba-2e44-4a9f-a4c3-664ba982edda)
+
 ## 🧩 Core Features
 
 - **MacOS ARM64 Only**: Built specifically for Apple Silicon
