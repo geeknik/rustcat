@@ -18,6 +18,7 @@ object = "0.32.1"
 goblin = "0.7.1"
 mach2 = "0.4.1" 
 libc = "0.2.172"
+cpp_demangle = "0.4.3"
 
 # Async runtime and utilities
 tokio = { version = "1.29.0", features = ["full"] }

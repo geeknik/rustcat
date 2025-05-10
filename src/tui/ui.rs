@@ -11,11 +11,12 @@ use ratatui::{
 use std::sync::mpsc;
 
 use crate::tui::app::{App, View, ActiveBlock, LogFilter};
-use crate::tui::views::{CodeView, MemoryView, RegistersView, StackView, ThreadsView, CommandView};
+use crate::tui::views::{CodeView, CommandView, draw_memory_view, draw_thread_view, draw_call_stack_view};
+use crate::debugger::memory::MemoryFormat;
 
 /// Set up log capturing for UI display
 pub fn setup_log_capture() -> mpsc::Receiver<String> {
-    let (tx, rx) = mpsc::channel();
+    let (_tx, rx) = mpsc::channel();
     
     // Create a custom logger that sends log messages to our channel
     struct ChannelLogger {
@@ -170,56 +171,50 @@ fn draw_main_area<B: Backend>(f: &mut Frame<B>, app: &App, area: Rect) {
                     ])
                     .split(area);
                 
-                // Draw the memory view in the top chunk
-                crate::tui::views::draw_memory_view(f, app, chunks[0], Some(&data), address);
+                // Display memory data
+                draw_memory_view(f, app, chunks[0], Some(&data), address);
                 
-                // Draw format selector in the bottom chunk
-                let current_format = app.get_memory_format();
-                let formats = vec![
-                    "[1] Hex",
-                    "[2] ASCII",
-                    "[3] UTF-8",
-                    "[4] U32",
-                    "[5] I32",
-                    "[6] F32",
+                // Display format selector
+                let format_names = [
+                    "Hex", "ASCII", "UTF8", "U8", "U16", "U32", "U64", "F32", "F64"
                 ];
                 
-                let format_spans: Vec<Span> = formats.into_iter()
-                    .map(|fmt| {
-                        let (index, name) = fmt.split_at(3);
-                        let style = if fmt.contains(current_format.name()) {
-                            Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)
-                        } else {
-                            Style::default().fg(Color::Gray)
-                        };
-                        Span::styled(format!("{}{}", index, name), style)
-                    })
-                    .collect();
+                let _current_format = app.get_memory_format().name();
+                let format_text = format!("Format: [{}]", format_names.join("] ["));
                 
-                let format_bar = Paragraph::new(Line::from(format_spans))
-                    .block(Block::default()
-                        .borders(Borders::ALL)
-                        .title("Format")
-                        .border_style(Style::default().fg(Color::Gray)))
-                    .alignment(Alignment::Center);
+                let paragraph = Paragraph::new(format_text)
+                    .style(Style::default())
+                    .alignment(Alignment::Center)
+                    .block(Block::default().borders(Borders::TOP));
                 
-                f.render_widget(format_bar, chunks[1]);
+                f.render_widget(paragraph, chunks[1]);
             } else {
                 // No memory loaded yet, show empty view
-                crate::tui::views::draw_memory_view(f, app, area, None, 0);
+                draw_memory_view(f, app, area, None, 0);
             }
         },
         View::Registers => {
-            let registers_view = RegistersView::new();
-            registers_view.render(f, area);
-        },
-        View::Stack => {
-            let stack_view = StackView::new();
-            stack_view.render(f, area);
+            // Basic rendering for now
+            let text = vec![
+                Line::from("Register View".to_string()),
+                Line::from(""),
+                Line::from("Press 'r' to refresh registers"),
+            ];
+            
+            let paragraph = Paragraph::new(text)
+                .style(Style::default())
+                .alignment(Alignment::Left)
+                .block(Block::default().borders(Borders::ALL).title("Registers"));
+            
+            f.render_widget(paragraph, area);
         },
         View::Threads => {
-            let threads_view = ThreadsView::new();
-            threads_view.render(f, area);
+            // Use our enhanced thread view
+            draw_thread_view(f, app, area);
+        },
+        View::Stack => {
+            // Use our enhanced call stack view
+            draw_call_stack_view(f, app, area);
         },
         View::Command => {
             let command_view = CommandView::new();
@@ -343,4 +338,4 @@ fn draw_status_bar<B: Backend>(f: &mut Frame<B>, app: &App, area: Rect) {
         .style(Style::default().fg(Color::White));
     
     f.render_widget(paragraph, area);
-}
+} 

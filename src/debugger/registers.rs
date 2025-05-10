@@ -61,6 +61,41 @@ impl Registers {
     pub fn clear(&mut self) {
         self.values.clear();
     }
+    
+    /// Get the stack pointer value
+    pub fn get_stack_pointer(&self) -> Option<u64> {
+        self.get(Register::SP)
+    }
+    
+    /// Get the program counter value
+    pub fn get_program_counter(&self) -> Option<u64> {
+        self.get(Register::PC)
+    }
+    
+    /// Get the link register (return address)
+    pub fn get_link_register(&self) -> Option<u64> {
+        self.get(Register::X30)
+    }
+    
+    /// Get the frame pointer
+    pub fn get_frame_pointer(&self) -> Option<u64> {
+        self.get(Register::X29)
+    }
+    
+    /// Format a register value as a hex string
+    pub fn format_value(&self, reg: Register) -> String {
+        match self.get(reg) {
+            Some(value) => format!("0x{:016x}", value),
+            None => "N/A".to_string(),
+        }
+    }
+    
+    /// Check if a register is dirty (modified since last stop)
+    pub fn is_dirty(&self, _reg: Register) -> bool {
+        // In a real implementation, we would track which registers have been modified
+        // since the last stop - for now, just return false
+        false
+    }
 }
 
 impl Default for Registers {

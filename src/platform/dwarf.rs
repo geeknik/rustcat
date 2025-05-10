@@ -283,6 +283,90 @@ impl<'a> DwarfParser<'a> {
         
         Ok(result)
     }
+
+    /// Find an address for a source file and line number
+    pub fn find_address_for_line(&self, file_path: &str, target_line: u32) -> Result<Option<u64>> {
+        let dwarf = self.dwarf.as_ref().ok_or_else(|| anyhow!("DWARF data not loaded"))?;
+        
+        for unit in self.iter_units()? {
+            // Skip units that don't have line info
+            let line_program = match unit.line_program.clone() {
+                Some(program) => program,
+                None => continue,
+            };
+            
+            let program_clone = line_program.clone();
+            let header = program_clone.header();
+            
+            // Run the line program to find the file and line
+            let mut rows = line_program.rows();
+            while let Some((_, row)) = rows.next_row()? {
+                // Skip rows that don't have file or line info
+                let file = match row.file(header) {
+                    Some(file) => file,
+                    None => continue,
+                };
+                
+                let line = match row.line() {
+                    Some(line) => line.get() as u32,
+                    None => continue,
+                };
+                
+                // Skip if the line doesn't match our target
+                if line != target_line {
+                    continue;
+                }
+                
+                // Get directory information with consistent string types
+                let directory = {
+                    let mut dir_string = String::new();
+                    let dir_idx = file.directory_index();
+                    if let Some(dir) = header.directory(dir_idx) {
+                        if let AttributeValue::String(s) = dir {
+                            if let Ok(raw_dir) = dwarf.attr_string(&unit, AttributeValue::String(s)) {
+                                if let Ok(dir_str) = raw_dir.to_string() {
+                                    dir_string = dir_str.to_string();
+                                }
+                            }
+                        }
+                    }
+                    dir_string
+                };
+                
+                // Extract the file name with proper AttributeValue handling
+                let filename = match file.path_name() {
+                    AttributeValue::String(s) => {
+                        if let Ok(raw_name) = dwarf.attr_string(&unit, AttributeValue::String(s)) {
+                            if let Ok(name) = raw_name.to_string() {
+                                name
+                            } else {
+                                continue;
+                            }
+                        } else {
+                            continue;
+                        }
+                    },
+                    _ => continue,
+                };
+                
+                // Ensure consistent string type in path construction
+                let path = if directory.is_empty() {
+                    filename.to_string()
+                } else {
+                    format!("{}/{}", directory, filename)
+                };
+                
+                // Check if this is the file we're looking for
+                // Simple path comparison - in a real implementation we would
+                // do more sophisticated path normalization and comparison
+                if path.ends_with(file_path) || file_path.ends_with(&path) {
+                    return Ok(Some(row.address()));
+                }
+            }
+        }
+        
+        Ok(None)
+    }
 }
 
 impl<'a> Default for DwarfParser<'a> {

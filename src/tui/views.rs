@@ -3,12 +3,13 @@ use ratatui::{
     layout::{Rect, Alignment},
     style::{Color, Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, Borders, List, ListItem, Paragraph},
+    widgets::{Block, Borders, List, ListItem, Paragraph, Table, Row, Cell},
     Frame,
 };
 
 use crate::tui::app::{App, View};
 use crate::debugger::memory::MemoryFormat;
+use crate::debugger::threads::{ThreadState};
 
 /// View for the code display
 pub struct CodeView;
@@ -326,5 +327,202 @@ pub fn draw_memory_view<B: Backend>(
             .alignment(Alignment::Center);
         
         f.render_widget(help_para, inner_area);
+    }
+}
+
+/// Draw thread view in the specified area
+pub fn draw_thread_view<B: Backend>(
+    f: &mut Frame<B>,
+    app: &App,
+    area: Rect,
+) {
+    let block = Block::default()
+        .title(Span::styled(
+            "Threads",
+            Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD),
+        ))
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(if app.current_view == View::Threads {
+            Color::Green
+        } else {
+            Color::Gray
+        }));
+    
+    let inner_area = block.inner(area);
+    f.render_widget(block, area);
+    
+    // Get thread information from the debugger
+    let debugger = app.get_debugger();
+    
+    if let Ok(debugger) = debugger.lock() {
+        if let Some(thread_manager) = debugger.get_thread_manager() {
+            let current_thread_id = thread_manager.current_thread_id();
+            
+            // Create table headers
+            let header = Row::new(vec![
+                "ID", "Name", "State", "Location", "PC", "SP"
+            ].into_iter().map(|h| Cell::from(h).style(Style::default().fg(Color::Yellow))))
+            .style(Style::default().fg(Color::Yellow));
+            
+            // Create rows for each thread
+            let rows = thread_manager.get_all_threads().iter().map(|(&tid, thread)| {
+                // Get location information
+                let location = if let Some(frame) = thread.current_frame() {
+                    if let (Some(file), Some(line)) = (&frame.source_file, frame.line) {
+                        format!("{}:{}", file, line)
+                    } else if let Some(function) = &frame.function {
+                        function.clone()
+                    } else {
+                        "Unknown".to_string()
+                    }
+                } else {
+                    "Unknown".to_string()
+                };
+                
+                // Format PC and SP
+                let pc = thread.registers()
+                    .and_then(|r| r.get_program_counter())
+                    .map_or("N/A".to_string(), |v| format!("0x{:x}", v));
+                
+                let sp = thread.registers()
+                    .and_then(|r| r.get_stack_pointer())
+                    .map_or("N/A".to_string(), |v| format!("0x{:x}", v));
+                
+                // Create row style based on thread state
+                let style = if Some(tid) == current_thread_id {
+                    Style::default().fg(Color::Green)
+                } else {
+                    match thread.state() {
+                        ThreadState::Running => Style::default().fg(Color::Blue),
+                        ThreadState::Stopped | ThreadState::AtBreakpoint => Style::default().fg(Color::Yellow),
+                        ThreadState::Suspended => Style::default().fg(Color::DarkGray),
+                        ThreadState::Exited(_) => Style::default().fg(Color::Red),
+                        _ => Style::default(),
+                    }
+                };
+                
+                // Create the row
+                Row::new(vec![
+                    tid.to_string(), 
+                    thread.name().unwrap_or("N/A").to_string(),
+                    thread.state().description(),
+                    location,
+                    pc,
+                    sp,
+                ]).style(style)
+            }).collect::<Vec<Row>>();
+            
+            // Create the table
+            let table = Table::new(rows)
+                .header(header)
+                .block(Block::default())
+                .highlight_style(Style::default().add_modifier(Modifier::BOLD))
+                .widths(&[
+                    ratatui::layout::Constraint::Length(6),  // ID
+                    ratatui::layout::Constraint::Length(15), // Name
+                    ratatui::layout::Constraint::Length(15), // State
+                    ratatui::layout::Constraint::Min(20),    // Location
+                    ratatui::layout::Constraint::Length(12), // PC
+                    ratatui::layout::Constraint::Length(12), // SP
+                ]);
+            
+            f.render_widget(table, inner_area);
+        } else {
+            // No thread manager or no threads
+            let text = if debugger.get_state() != crate::debugger::core::DebuggerState::Running {
+                "No program is running."
+            } else {
+                "No thread information available."
+            };
+            
+            let paragraph = Paragraph::new(text)
+                .alignment(Alignment::Center)
+                .style(Style::default().fg(Color::Gray));
+            
+            f.render_widget(paragraph, inner_area);
+        }
+    } else {
+        // Failed to lock debugger
+        let paragraph = Paragraph::new("Failed to access debugger.")
+            .alignment(Alignment::Center)
+            .style(Style::default().fg(Color::Red));
+        
+        f.render_widget(paragraph, inner_area);
+    }
+}
+
+/// Draw call stack view in the specified area
+pub fn draw_call_stack_view<B: Backend>(
+    f: &mut Frame<B>,
+    app: &App,
+    area: Rect,
+) {
+    let block = Block::default()
+        .title(Span::styled(
+            "Call Stack",
+            Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD),
+        ))
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(if app.current_view == View::Stack {
+            Color::Green
+        } else {
+            Color::Gray
+        }));
+    
+    let inner_area = block.inner(area);
+    f.render_widget(block, area);
+    
+    // Get call stack from the debugger
+    let debugger = app.get_debugger();
+    
+    if let Ok(debugger) = debugger.lock() {
+        if let Some(thread_manager) = debugger.get_thread_manager() {
+            if let Some(thread) = thread_manager.current_thread() {
+                let call_stack = thread.call_stack();
+                
+                if !call_stack.is_empty() {
+                    // Create items for the call stack
+                    let items: Vec<ListItem> = call_stack.iter()
+                        .map(|frame| {
+                            let desc = frame.description();
+                            ListItem::new(desc).style(
+                                if frame.number == 0 {
+                                    Style::default().fg(Color::Green) // Current frame
+                                } else {
+                                    Style::default()
+                                }
+                            )
+                        })
+                        .collect();
+                    
+                    let list = List::new(items)
+                        .block(Block::default())
+                        .highlight_style(Style::default().add_modifier(Modifier::BOLD));
+                    
+                    f.render_widget(list, inner_area);
+                    return;
+                }
+            }
+        }
+        
+        // No thread, call stack, or frames
+        let text = if debugger.get_state() != crate::debugger::core::DebuggerState::Running {
+            "No program is running."
+        } else {
+            "No call stack information available."
+        };
+        
+        let paragraph = Paragraph::new(text)
+            .alignment(Alignment::Center)
+            .style(Style::default().fg(Color::Gray));
+        
+        f.render_widget(paragraph, inner_area);
+    } else {
+        // Failed to lock debugger
+        let paragraph = Paragraph::new("Failed to access debugger.")
+            .alignment(Alignment::Center)
+            .style(Style::default().fg(Color::Red));
+        
+        f.render_widget(paragraph, inner_area);
     }
 }

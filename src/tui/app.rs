@@ -7,12 +7,12 @@ use std::io::Write;
 use std::sync::mpsc;
 
 use anyhow::{Result, Context, anyhow};
-use crossterm::event::{Event, KeyCode, KeyModifiers, MouseEvent, MouseEventKind, MouseButton};
+use crossterm::event::{Event, KeyCode, KeyModifiers, MouseEventKind, MouseButton};
 use crossterm::terminal::{disable_raw_mode, enable_raw_mode};
 use crossterm::execute;
 use crossterm::event::EnableMouseCapture;
 use crossterm::event::DisableMouseCapture;
-use log::{debug, info, warn, error, LevelFilter, Level};
+use log::{debug, info, warn, error};
 use ratatui::backend::CrosstermBackend;
 use ratatui::layout::Rect;
 use ratatui::Terminal;
@@ -1067,5 +1067,10 @@ impl App {
             MemoryFormat::F32 => MemoryFormat::Hex,
             _ => MemoryFormat::Hex,
         };
+    }
+
+    /// Get reference to the debugger
+    pub fn get_debugger(&self) -> &Arc<Mutex<Debugger>> {
+        &self.debugger
     }
 }

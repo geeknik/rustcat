@@ -5,11 +5,11 @@ use std::time::Instant;
 use anyhow::{anyhow, Result};
 use log::{info, warn, debug, error};
 
-use crate::debugger::breakpoint::Breakpoint;
-use crate::debugger::memory::MemoryMap;
+use crate::debugger::breakpoint::{Breakpoint, BreakpointManager, BreakpointType, ConditionEvaluator};
+use crate::debugger::memory::{MemoryMap, MemoryFormat};
 use crate::debugger::registers::Registers;
 use crate::debugger::symbols::SymbolTable;
-use crate::debugger::threads::ThreadManager;
+use crate::debugger::threads::{ThreadManager, ThreadState, StackFrame};
 use crate::platform::macos::MacosDebugger;
 use crate::platform::dwarf::DwarfParser;
 
@@ -40,8 +40,8 @@ pub struct Debugger {
     state: DebuggerState,
     /// Platform-specific debugger implementation
     platform: MacosDebugger,
-    /// Breakpoints
-    breakpoints: Vec<Breakpoint>,
+    /// Breakpoint manager
+    breakpoints: BreakpointManager,
     /// Memory map
     memory_map: Option<MemoryMap>,
     /// Symbol table
@@ -76,7 +76,7 @@ impl Debugger {
             pid: None,
             state: DebuggerState::Idle,
             platform,
-            breakpoints: Vec::new(),
+            breakpoints: BreakpointManager::new(),
             memory_map: None,
             symbols,
             thread_manager,
@@ -235,14 +235,39 @@ impl Debugger {
         if let Some(pid) = self.pid {
             info!("Setting breakpoint at 0x{:x}", address);
             let saved_data = self.platform.set_breakpoint(pid, address)?;
-            self.breakpoints.push(Breakpoint::new(address, saved_data));
+            
+            // Create a new breakpoint
+            let mut breakpoint = Breakpoint::new(address, saved_data);
+            
+            // Try to add symbol name information if available
+            let symbol_info = {
+                let symbols = self.symbols.lock().unwrap();
+                symbols.find_by_address_range(address).cloned()
+            };
+            
+            if let Some(symbol) = symbol_info {
+                breakpoint.set_symbol_name(Some(symbol.display_name().to_string()));
+                
+                // Add source location if available
+                if let Some(file) = symbol.source_file() {
+                    if let Some(line) = symbol.line() {
+                        breakpoint.set_source_location(file, line);
+                    }
+                }
+            }
+            
+            // Add to breakpoint manager
+            self.breakpoints.add_breakpoint(breakpoint);
+            
+            Ok(())
         } else {
             // If program isn't started yet, just record the breakpoint for later
             info!("Queueing breakpoint at 0x{:x} for when program starts", address);
-            self.breakpoints.push(Breakpoint::new(address, 0));
+            let breakpoint = Breakpoint::new(address, 0);
+            self.breakpoints.add_breakpoint(breakpoint);
+            
+            Ok(())
         }
-        
-        Ok(())
     }
     
     /// Set a breakpoint at a function name
@@ -252,7 +277,7 @@ impl Debugger {
         // Try to find the symbol in the symbol table
         let address = {
             let symbols = self.symbols.lock().unwrap();
-            symbols.find_by_name(name).map(|sym| sym.address())
+            symbols.find_by_any_name(name).map(|sym| sym.address())
         };
         
         if let Some(addr) = address {
@@ -263,16 +288,47 @@ impl Debugger {
             Err(anyhow!("Symbol not found: {}", name))
         }
     }
+
+    /// Set a breakpoint at a source file and line number
+    pub fn set_breakpoint_by_location(&mut self, file: &str, line: u32) -> Result<()> {
+        debug!("Setting breakpoint at {}:{}", file, line);
+        
+        // Try to find the address for this source location using DWARF info
+        if let Some(addr) = self.dwarf_parser.find_address_for_line(file, line)? {
+            info!("Found address 0x{:x} for {}:{}", addr, file, line);
+            
+            // Create a breakpoint
+            let mut breakpoint = Breakpoint::new(addr, 0);
+            breakpoint.set_source_location(file, line);
+            
+            // If the program is running, set the real breakpoint
+            if let Some(pid) = self.pid {
+                let saved_data = self.platform.set_breakpoint(pid, addr)?;
+                breakpoint = Breakpoint::new(addr, saved_data);
+                breakpoint.set_source_location(file, line);
+            }
+            
+            // Add to breakpoint manager
+            self.breakpoints.add_breakpoint(breakpoint);
+            
+            Ok(())
+        } else {
+            Err(anyhow!("Could not find address for {}:{}", file, line))
+        }
+    }
     
     /// Remove a breakpoint at the specified address
     pub fn remove_breakpoint(&mut self, address: u64) -> Result<()> {
-        if let Some(index) = self.breakpoints.iter().position(|bp| bp.address() == address) {
-            let bp = self.breakpoints.remove(index);
+        if let Some((index, bp)) = self.breakpoints.find_by_address(address) {
+            let saved_data = bp.saved_data();
             
             if let Some(pid) = self.pid {
                 info!("Removing breakpoint at 0x{:x}", address);
-                self.platform.remove_breakpoint(pid, address, bp.saved_data())?;
+                self.platform.remove_breakpoint(pid, address, saved_data)?;
             }
+            
+            // Remove from breakpoint manager
+            self.breakpoints.remove_breakpoint(index);
             
             Ok(())
         } else {
@@ -280,9 +336,29 @@ impl Debugger {
         }
     }
     
+    /// Remove a breakpoint by ID
+    pub fn remove_breakpoint_by_id(&mut self, id: &str) -> Result<()> {
+        if let Some((index, bp)) = self.breakpoints.find_by_id(id) {
+            let address = bp.address();
+            let saved_data = bp.saved_data();
+            
+            if let Some(pid) = self.pid {
+                info!("Removing breakpoint {} at 0x{:x}", id, address);
+                self.platform.remove_breakpoint(pid, address, saved_data)?;
+            }
+            
+            // Remove from breakpoint manager
+            self.breakpoints.remove_breakpoint(index);
+            
+            Ok(())
+        } else {
+            Err(anyhow!("No breakpoint found with ID: {}", id))
+        }
+    }
+    
     /// Find a breakpoint at the specified address
     fn find_breakpoint(&self, address: u64) -> Option<&Breakpoint> {
-        self.breakpoints.iter().find(|bp| bp.address() == address)
+        self.breakpoints.find_by_address(address).map(|(_, bp)| bp)
     }
     
     /// Get the current registers
@@ -447,7 +523,12 @@ impl Debugger {
     
     /// Get all breakpoints
     pub fn get_breakpoints(&self) -> &[Breakpoint] {
-        &self.breakpoints
+        self.breakpoints.get_all()
+    }
+    
+    /// Get the thread manager
+    pub fn get_thread_manager(&self) -> Option<&ThreadManager> {
+        Some(&self.thread_manager)
     }
     
     /// Get information about the function at a given address
@@ -499,6 +580,244 @@ impl Debugger {
             Err(anyhow!("Memory map not initialized"))
         }
     }
+
+    /// Handle a thread stop event
+    fn handle_thread_stop(&mut self, tid: u64, address: u64, signal: Option<i32>) -> Result<()> {
+        debug!("Thread {} stopped at 0x{:x}", tid, address);
+        
+        // Update thread state
+        let is_at_breakpoint = self.find_breakpoint(address).is_some();
+        let thread_state = if is_at_breakpoint {
+            ThreadState::AtBreakpoint
+        } else if let Some(sig) = signal {
+            ThreadState::SignalStop(sig)
+        } else {
+            ThreadState::Stopped
+        };
+        
+        // Update stop reason
+        let stop_reason = if is_at_breakpoint {
+            Some(format!("Breakpoint hit at 0x{:x}", address))
+        } else if let Some(sig) = signal {
+            Some(format!("Signal {} received", sig))
+        } else {
+            Some("Stopped by debugger".to_string())
+        };
+        
+        // Read thread registers
+        // Note: in a real implementation, the platform would have a read_registers function
+        // For now, we'll create some dummy registers
+        let mut registers = Registers::new();
+        registers.set(crate::debugger::registers::Register::PC, address);
+        registers.set(crate::debugger::registers::Register::SP, 0xFFFF_FFFF_FFFF_0000);
+        registers.set(crate::debugger::registers::Register::X29, 0xFFFF_FFFF_FFFF_0000);
+        
+        if let Some(thread) = self.thread_manager.get_thread_mut(tid) {
+            thread.set_registers(registers);
+            thread.set_state(thread_state);
+            thread.set_stop_reason(stop_reason);
+            
+            // Make this the current thread if we don't have one already
+            // or if this thread is at a breakpoint (prioritize breakpoints)
+            if self.thread_manager.current_thread_id().is_none() || 
+               (is_at_breakpoint && !self.thread_manager.any_thread_at_breakpoint()) {
+                self.thread_manager.set_current_thread(tid);
+            }
+            
+            // Update call stack if this is important thread (current or at breakpoint)
+            if self.thread_manager.current_thread_id() == Some(tid) || is_at_breakpoint {
+                if let Ok(stack) = self.build_call_stack(tid) {
+                    self.thread_manager.update_call_stack(tid, stack);
+                }
+            }
+        }
+        
+        // Mark the current breakpoint if at one
+        if is_at_breakpoint {
+            self.current_breakpoint = Some(address);
+        }
+        
+        Ok(())
+    }
+    
+    /// Build a call stack for a thread
+    fn build_call_stack(&self, tid: u64) -> Result<Vec<StackFrame>> {
+        debug!("Building call stack for thread {}", tid);
+        
+        // Get the thread's registers
+        let thread = self.thread_manager.get_thread(tid)
+            .ok_or_else(|| anyhow!("Thread {} not found", tid))?;
+        
+        let registers = thread.registers()
+            .ok_or_else(|| anyhow!("Thread {} has no register values", tid))?;
+        
+        // Get program counter, stack pointer, and frame pointer
+        let pc = registers.get_program_counter()
+            .ok_or_else(|| anyhow!("Unable to read PC register"))?;
+        
+        let sp = registers.get_stack_pointer()
+            .ok_or_else(|| anyhow!("Unable to read SP register"))?;
+        
+        let fp = registers.get_frame_pointer()
+            .ok_or_else(|| anyhow!("Unable to read FP register"))?;
+        
+        // Start with the current frame
+        let mut stack = Vec::new();
+        let mut frame_pc = pc;
+        let mut frame_sp = sp;
+        let mut frame_fp = fp;
+        let mut frame_number = 0;
+        
+        // Add the current frame
+        let mut current_frame = StackFrame::new(frame_number, frame_pc, frame_sp, frame_fp);
+        
+        // Try to get function name and source location
+        if let Some(symbol) = {
+            let symbols = self.symbols.lock().unwrap();
+            symbols.find_by_address_range(frame_pc).cloned()
+        } {
+            let function_name = symbol.display_name().to_string();
+            current_frame = current_frame.with_function(function_name);
+            
+            if let (Some(file), Some(line)) = (symbol.source_file(), symbol.line()) {
+                current_frame = current_frame.with_source_location(file.to_string(), line);
+            }
+        }
+        
+        stack.push(current_frame);
+        
+        // Limit the stack depth to prevent infinite loops from corrupted memory
+        const MAX_STACK_FRAMES: usize = 100;
+        
+        // We'd typically use DWARF info here for unwinding, but for now we'll use
+        // a simple frame pointer-based approach for ARM64
+        while frame_fp > 0 && stack.len() < MAX_STACK_FRAMES {
+            // For ARM64, the frame looks like:
+            // [FP, +0]: Previous FP
+            // [FP, +8]: Return address (LR)
+            
+            // Read previous frame pointer
+            if let Ok(data) = self.platform.read_memory(
+                self.pid.unwrap(), 
+                frame_fp, 
+                16 // 16 bytes for FP and LR
+            ) {
+                if data.len() >= 16 {
+                    // Extract previous FP and return address
+                    let prev_fp = u64::from_le_bytes([
+                        data[0], data[1], data[2], data[3], 
+                        data[4], data[5], data[6], data[7]
+                    ]);
+                    
+                    let return_addr = u64::from_le_bytes([
+                        data[8], data[9], data[10], data[11], 
+                        data[12], data[13], data[14], data[15]
+                    ]);
+                    
+                    // If we've reached the end of the stack or have invalid values, break
+                    if prev_fp <= frame_fp || return_addr == 0 {
+                        break;
+                    }
+                    
+                    // Update frame values
+                    frame_pc = return_addr;
+                    frame_sp = frame_fp + 16; // Approximate
+                    frame_fp = prev_fp;
+                    frame_number += 1;
+                    
+                    // Create new frame
+                    let mut next_frame = StackFrame::new(frame_number, frame_pc, frame_sp, frame_fp);
+                    
+                    // Try to get function name and source location
+                    if let Some(symbol) = {
+                        let symbols = self.symbols.lock().unwrap();
+                        symbols.find_by_address_range(frame_pc).cloned()
+                    } {
+                        let function_name = symbol.display_name().to_string();
+                        next_frame = next_frame.with_function(function_name);
+                        
+                        if let (Some(file), Some(line)) = (symbol.source_file(), symbol.line()) {
+                            next_frame = next_frame.with_source_location(file.to_string(), line);
+                        }
+                    }
+                    
+                    stack.push(next_frame);
+                } else {
+                    break;
+                }
+            } else {
+                // Failed to read memory, stop unwinding
+                break;
+            }
+        }
+        
+        Ok(stack)
+    }
+
+    /// Set a thread-specific breakpoint
+    pub fn set_thread_breakpoint(&mut self, address: u64, tid: u64) -> Result<()> {
+        // First set a normal breakpoint
+        self.set_breakpoint(address)?;
+        
+        // Then mark it as thread-specific
+        if let Some(thread) = self.thread_manager.get_thread_mut(tid) {
+            thread.add_breakpoint(address);
+            info!("Set thread-specific breakpoint at 0x{:x} for thread {}", address, tid);
+            Ok(())
+        } else {
+            Err(anyhow!("Thread {} not found", tid))
+        }
+    }
+    
+    /// Resume a specific thread
+    pub fn resume_thread(&mut self, tid: u64) -> Result<()> {
+        if let Some(pid) = self.pid {
+            if self.thread_manager.resume_thread(tid) {
+                // Note: in a real implementation, the platform would have a resume_thread function
+                // For now, we'll just log the operation
+                info!("Resumed thread {}", tid);
+                Ok(())
+            } else {
+                Err(anyhow!("Thread {} is not suspended", tid))
+            }
+        } else {
+            Err(anyhow!("No process is being debugged"))
+        }
+    }
+    
+    /// Suspend a specific thread
+    pub fn suspend_thread(&mut self, tid: u64) -> Result<()> {
+        if let Some(pid) = self.pid {
+            if self.thread_manager.suspend_thread(tid) {
+                // Note: in a real implementation, the platform would have a suspend_thread function
+                // For now, we'll just log the operation
+                info!("Suspended thread {}", tid);
+                Ok(())
+            } else {
+                Err(anyhow!("Thread {} is not running", tid))
+            }
+        } else {
+            Err(anyhow!("No process is being debugged"))
+        }
+    }
+    
+    /// Update the list of threads in the target process
+    fn update_threads(&mut self) -> Result<()> {
+        if let Some(pid) = self.pid {
+            // Note: in a real implementation, the platform would have a get_thread_ids function
+            // For now, we'll assume we have a single thread with the same ID as the process
+            let thread_ids = vec![pid as u64];
+            
+            debug!("Found {} threads in process {}", thread_ids.len(), pid);
+            
+            // Update thread manager
+            self.thread_manager.update_threads(thread_ids);
+            
+            Ok(())
+        } else {
+            Err(anyhow!("No process is being debugged"))
+        }
+    }
 }
 
 impl Drop for Debugger {
@@ -509,5 +828,15 @@ impl Drop for Debugger {
                 error!("Error killing process: {}", e);
             }
         }
+    }
+}
+
+// Implement the ConditionEvaluator trait for Debugger
+impl ConditionEvaluator for Debugger {
+    fn evaluate_condition(&self, expression: &str) -> Result<bool> {
+        // This would normally evaluate the expression in the context of the debugged program
+        // For now, we'll just return true for any condition
+        debug!("Evaluating condition: {}", expression);
+        Ok(true)
     }
 }
