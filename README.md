@@ -24,6 +24,7 @@ This is the debugger macOS should ship with, but doesn't. So we did it ourselves
 - **📊 Rich Memory Views**: Inspect memory as hex, ASCII, integers, floats, etc.
 - **🧵 Advanced Breakpoints**: Conditions, ignore counts, log messages
 - **📊 Thread Management**: Track thread states, build call stacks, manage thread-specific breakpoints
+- **🔒 Security-First**: Comprehensive security testing infrastructure to ensure memory safety and robust handling of malicious inputs
 
 ## 🚀 Performance
 
@@ -119,6 +120,18 @@ You shouldn't be forced to read Apple crash dumps to learn assembly.
 Rustcat is the debugger Mac deserves. Clean. Deterministic. Free.
 No more syscalls in the dark. Let's light this up.
 
+## 🔒 Security Testing Infrastructure
+
+RUSTCAT includes a comprehensive security testing framework to ensure memory safety and robust handling of hostile inputs:
+
+- **Unit Tests**: Focused tests for memory bounds checking, command parsing, and input validation
+- **Fuzzing**: Automated discovery of security issues with custom fuzz targets for binary parsing, DWARF data handling, and command input
+- **Integration Tests**: Tests that validate security aspects of full debugger workflows
+- **Performance Benchmarks**: Ensuring performance characteristics even with malicious inputs
+- **Security Documentation**: Guidelines and checklists for secure development
+
+All security tests are automatically run via GitHub Actions to prevent regressions.
+
 ## 🔮 Roadmap
 
 - [x] Project initialization
@@ -150,6 +163,7 @@ No more syscalls in the dark. Let's light this up.
 - [x] Function call tracing
 - [x] Variable inspection
 - [x] Expression evaluation
+- [x] Security testing infrastructure
 - [ ] Watchpoints
 - [ ] Full documentation
 
