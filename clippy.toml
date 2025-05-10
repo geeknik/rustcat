@@ -1,4 +1,0 @@
-# The project is still in development, so allow dead code
-dead-code = { level = "allow" }
-# Many methods will be used in the future
-unused-mut = { level = "allow" } 
