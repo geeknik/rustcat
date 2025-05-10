@@ -6,7 +6,6 @@ use anyhow::{Result, anyhow};
 use log::debug;
 
 use crate::debugger::symbols::SymbolTable;
-use goblin::{elf, mach, Object};
 
 /// Represents a variable's type
 #[derive(Debug, Clone, PartialEq)]
@@ -451,7 +450,7 @@ impl VariableManager {
     }
 
     /// Parse a variable expression and return the variable value
-    pub fn evaluate_expression(&mut self, expression: &str, pid: i32) -> Result<VariableValue> {
+    pub fn evaluate_expression(&mut self, expression: &str, _pid: i32) -> Result<VariableValue> {
         // Trim whitespace
         let expression = expression.trim();
         
@@ -492,7 +491,7 @@ impl VariableManager {
         if expression.starts_with('*') && expression.len() > 1 {
             // Evaluate the inner expression to get the address
             let inner_expr = &expression[1..];
-            let inner_value = self.evaluate_expression(inner_expr, pid)?;
+            let inner_value = self.evaluate_expression(inner_expr, _pid)?;
             
             // Convert the value to an address
             let _address = match inner_value {
@@ -527,7 +526,7 @@ impl VariableManager {
             let member_name = &expression[dot_pos+1..];
             
             // Evaluate the struct expression
-            let struct_value = self.evaluate_expression(struct_expr, pid)?;
+            let struct_value = self.evaluate_expression(struct_expr, _pid)?;
             
             // Try to access the member
             match struct_value {
@@ -552,10 +551,10 @@ impl VariableManager {
             let index_expr = &expression[bracket_pos+1..expression.len()-1];
             
             // Evaluate the array expression
-            let array_value = self.evaluate_expression(array_expr, pid)?;
+            let array_value = self.evaluate_expression(array_expr, _pid)?;
             
             // Evaluate the index expression
-            let index_value = self.evaluate_expression(index_expr, pid)?;
+            let index_value = self.evaluate_expression(index_expr, _pid)?;
             
             // Get the index as a number
             let index = match index_value {
@@ -613,7 +612,7 @@ impl VariableManager {
                 let addr_expr = &expression[pos+1..];
                 
                 // Evaluate the address expression
-                let addr_value = self.evaluate_expression(addr_expr, pid)?;
+                let addr_value = self.evaluate_expression(addr_expr, _pid)?;
                 
                 // Convert to address
                 let _addr = match addr_value {
@@ -656,8 +655,8 @@ impl VariableManager {
                 let right_expr = expression[pos+1..].trim();
                 
                 // Evaluate both sides
-                let left_result = self.evaluate_expression(left_expr, pid);
-                let right_result = self.evaluate_expression(right_expr, pid);
+                let left_result = self.evaluate_expression(left_expr, _pid);
+                let right_result = self.evaluate_expression(right_expr, _pid);
                 
                 // Handle evaluation errors
                 if let Err(e) = &left_result {
@@ -773,14 +772,15 @@ impl VariableManager {
         // Handle parenthesized expressions
         if expression.starts_with('(') && expression.ends_with(')') && expression.len() >= 2 {
             let inner_expr = &expression[1..expression.len()-1];
-            return self.evaluate_expression(inner_expr, pid);
+            return self.evaluate_expression(inner_expr, _pid);
         }
         
         // If we got here, we couldn't evaluate the expression
         Err(anyhow!("Could not evaluate expression: {}", expression))
     }
 
-    /// Look up variable information from debug symbols
+    /// Parse information about a variable based on name/address and debug info
+    #[allow(dead_code)]
     fn lookup_variable_info(&self, name: &str, _address: u64) -> Option<(VariableType, String)> {
         // In a real implementation, this would:
         // 1. Use DWARF debug info to find information about the variable
@@ -811,7 +811,8 @@ impl VariableManager {
 mod dwarf_helpers {
     use super::*;
     
-    /// Convert a DWARF base type to a VariableType
+    /// Convert a DWARF base type encoding to a VariableType
+    #[allow(dead_code)]
     pub fn dwarf_base_type_to_variable_type(encoding: u64, byte_size: u64) -> VariableType {
         // DWARF encodings (from DWARF v4 spec)
         const DW_ATE_ADDRESS: u64 = 0x01;

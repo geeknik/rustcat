@@ -295,30 +295,34 @@ impl Disassembler {
     }
 }
 
+impl Default for Disassembler {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     
+    /// Test that we correctly detect RET instructions
     #[test]
     fn test_disassemble_ret() {
-        let disassembler = Disassembler::new();
-        let bytes = [0xC0, 0x03, 0x5F, 0xD6]; // RET instruction
-        let result = disassembler.decode_arm64(&bytes, 0x1000).unwrap();
-        
+        let disasm = Disassembler::new();
+        let result = disasm.decode_arm64(&[0xc0, 0x03, 0x5f, 0xd6], 0x1000).unwrap();
+        assert!(result.is_return);
         assert_eq!(result.text, "ret lr");
         assert_eq!(result.address, 0x1000);
-        assert_eq!(result.is_return, true);
     }
     
+    /// Test that we correctly detect BL instructions
     #[test]
     fn test_disassemble_bl() {
-        let disassembler = Disassembler::new();
-        let bytes = [0x41, 0x00, 0x00, 0x94]; // BL +4
-        let result = disassembler.decode_arm64(&bytes, 0x1000).unwrap();
-        
+        let disasm = Disassembler::new();
+        let result = disasm.decode_arm64(&[0x01, 0x00, 0x00, 0x94], 0x1000).unwrap();
+        assert!(result.is_call);
         assert_eq!(result.text, "bl 0x1004");
         assert_eq!(result.address, 0x1000);
-        assert_eq!(result.is_call, true);
         assert_eq!(result.branch_target, Some(0x1004));
     }
 } 

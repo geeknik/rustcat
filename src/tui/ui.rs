@@ -18,6 +18,8 @@ pub fn setup_log_capture() -> mpsc::Receiver<String> {
     let (_tx, rx) = mpsc::channel();
     
     // Create a custom logger that sends log messages to our channel
+    /// Logger that sends messages to a channel
+    #[allow(dead_code)]
     struct ChannelLogger {
         sender: mpsc::Sender<String>,
     }

@@ -122,9 +122,10 @@ pub enum CompletionKind {
     Breakpoint,
 }
 
-/// Command queue item
+/// Queued commands for deferred execution
 #[derive(Debug)]
-struct QueuedCommand {
+#[allow(dead_code)]
+pub struct QueuedCommand {
     command: Command,
     timestamp: Instant,
     retries: usize,
@@ -814,7 +815,8 @@ impl App {
         
         completions
     }
-    /// Update UI state based on debugger state
+    /// Update the app state from the debugger
+    #[allow(dead_code)]
     fn update_debugger_state(&mut self, debugger: &Debugger) {
         // Update current function - placeholder until current_function_name is implemented
         self.current_function = Some("main".to_string());

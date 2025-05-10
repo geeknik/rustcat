@@ -55,7 +55,8 @@ pub struct Debugger {
     thread_manager: ThreadManager,
     /// DWARF parser for debug information
     dwarf_parser: DwarfParser<'static>,
-    /// Start time of the debugging session
+    /// When the debugging started
+    #[allow(dead_code)]
     start_time: Instant,
     /// Current breakpoint address (if stopped at one)
     current_breakpoint: Option<u64>,
@@ -694,6 +695,7 @@ impl Debugger {
     }
 
     /// Handle a thread stop event
+    #[allow(dead_code)]
     fn handle_thread_stop(&mut self, tid: u64, address: u64, signal: Option<i32>) -> Result<()> {
         debug!("Thread {} stopped at 0x{:x}", tid, address);
         
@@ -753,6 +755,7 @@ impl Debugger {
     }
     
     /// Build a call stack for a thread
+    #[allow(dead_code)]
     fn build_call_stack(&self, tid: u64) -> Result<Vec<StackFrame>> {
         debug!("Building call stack for thread {}", tid);
         
@@ -914,6 +917,7 @@ impl Debugger {
     }
     
     /// Update the list of threads in the target process
+    #[allow(dead_code)]
     fn update_threads(&mut self) -> Result<()> {
         if let Some(pid) = self.pid {
             // Note: in a real implementation, the platform would have a get_thread_ids function

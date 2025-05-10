@@ -163,13 +163,14 @@ pub struct ThreadTiming {
 
 impl ThreadTiming {
     /// Create new thread timing information
+    #[allow(dead_code)]
     pub fn new() -> Self {
         let now = Instant::now();
         Self {
             creation_time: now,
-            cpu_time: Duration::ZERO,
-            user_time: Duration::ZERO,
-            system_time: Duration::ZERO,
+            cpu_time: Duration::from_secs(0),
+            user_time: Duration::from_secs(0),
+            system_time: Duration::from_secs(0),
             last_update: now,
         }
     }
@@ -185,6 +186,12 @@ impl ThreadTiming {
     /// Get time since thread creation
     pub fn lifetime(&self) -> Duration {
         Instant::now().duration_since(self.creation_time)
+    }
+}
+
+impl Default for ThreadTiming {
+    fn default() -> Self {
+        Self::new()
     }
 }
 

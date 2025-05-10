@@ -584,7 +584,8 @@ impl MacosDebugger {
         Ok(self.threads[0])
     }
     
-    /// Suspend all threads
+    /// Suspend all threads in the current process
+    #[allow(dead_code)]
     fn suspend_all_threads(&self) -> Result<()> {
         if let Some(_task_port) = self._task_port {
             // In a real implementation, we could either suspend the entire task
@@ -611,6 +612,7 @@ impl MacosDebugger {
     }
     
     /// Suspend a specific thread
+    #[allow(dead_code)]
     fn suspend_thread(&self, thread: thread_act_t) -> Result<()> {
         // In a real implementation, we would use thread_suspend
         let kr = unsafe { thread_suspend(thread) };
@@ -621,7 +623,8 @@ impl MacosDebugger {
         Ok(())
     }
     
-    /// Get memory protection for an address
+    /// Get memory protection flags for an address
+    #[allow(dead_code)]
     fn get_memory_protection(&self, _address: u64) -> Result<u32> {
         if let Some(_task_port) = self._task_port {
             // In a real implementation, we would use mach_vm_region to get memory protection
@@ -634,7 +637,8 @@ impl MacosDebugger {
         }
     }
     
-    /// Set memory protection for an address range
+    /// Set memory protection flags for a region
+    #[allow(dead_code)]
     fn set_memory_protection(&self, address: u64, size: usize, protection: u32) -> Result<()> {
         if let Some(_task_port) = self._task_port {
             debug!("Setting memory protection 0x{:x} for address 0x{:x} ({} bytes)", 
