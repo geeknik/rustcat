@@ -6,8 +6,8 @@ use std::env;
 use std::path::Path;
 use std::process;
 
-use anyhow::{anyhow, Result};
-use log::{info, warn, error, LevelFilter};
+use anyhow::Result;
+use log::{info, error, LevelFilter};
 
 use debugger::core::Debugger;
 use tui::app::App;
@@ -42,7 +42,7 @@ fn main() -> Result<()> {
     // Process arguments
     let mut target_program = String::new();
     let mut program_args = Vec::new();
-    let mut i = 1;
+    let i = 1;
     
     if i < args.len() {
         match args[i].as_str() {

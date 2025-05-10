@@ -29,13 +29,13 @@ fn test_malformed_commands() {
     let result = parse_command("");
     match result {
         Ok(cmd) => assert!(matches!(cmd, AppCommand::Unknown(_))),
-        Err(_) => assert!(false, "Expected Unknown command, got error")
+        Err(_) => panic!("Expected Unknown command, got error")
     }
     
     let result = parse_command("foobar");
     match result {
         Ok(cmd) => assert!(matches!(cmd, AppCommand::Unknown(_))),
-        Err(_) => assert!(false, "Expected Unknown command, got error")
+        Err(_) => panic!("Expected Unknown command, got error")
     }
 }
 
@@ -48,7 +48,7 @@ fn test_buffer_overflow_attempt() {
     // Our current implementation will return Unknown, which is fine
     match result {
         Ok(cmd) => assert!(matches!(cmd, AppCommand::Break(_))),
-        Err(_) => assert!(false, "Expected valid command, got error")
+        Err(_) => panic!("Expected valid command, got error")
     }
 }
 
@@ -76,7 +76,7 @@ fn test_injection_attempt() {
                     "Expected Unknown command for: {}", attempt);
             }
         } else {
-            assert!(false, "Expected valid command, got error");
+            panic!("Expected valid command, got error");
         }
     }
 }
@@ -99,10 +99,10 @@ fn test_unicode_handling() {
                     AppCommand::Break(_) => (), // valid for "break 你好", "break \u{0000}"
                     AppCommand::Print(_) => (), // valid for "print 😊+😊"
                     AppCommand::Display(_) => (), // valid for "display 💡"
-                    _ => assert!(false, "Unexpected command type")
+                    _ => panic!("Unexpected command type")
                 }
             },
-            Err(_) => assert!(false, "Expected valid command, got error")
+            Err(_) => panic!("Expected valid command, got error")
         }
     }
 }
