@@ -1,5 +1,5 @@
-use std::process::{Command, Child, Stdio};
-use std::time::{Duration, Instant};
+use std::process::{Command, Child};
+use std::time::Duration;
 use std::ptr;
 
 use anyhow::{anyhow, Result};
@@ -16,7 +16,6 @@ use mach2::task::{task_resume, task_suspend, task_threads};
 use mach2::traps::task_for_pid;
 use mach2::thread_act::thread_suspend;
 use mach2::vm::{mach_vm_read_overwrite, mach_vm_write, mach_vm_protect, mach_vm_deallocate};
-use mach2::task_info::{task_info_t, TASK_BASIC_INFO};
 
 // Libc for waitpid, ptrace
 use libc::{pid_t, waitpid, WIFSTOPPED, WSTOPSIG};
@@ -288,16 +287,16 @@ impl MacosDebugger {
         // arm_thread_state64_t contains __x[29] (GP regs), __fp, __lr, __sp, __pc, and __cpsr
         for i in 0..29 {
             if let Some(reg) = Register::from_arm64_index(i) {
-                registers.set(reg, unsafe { arm_thread_state.__x[i] });
+                registers.set(reg, arm_thread_state.__x[i]);
             }
         }
         
         // Extract special registers
-        registers.set(Register::X29, unsafe { arm_thread_state.__fp });
-        registers.set(Register::X30, unsafe { arm_thread_state.__lr });
-        registers.set(Register::SP, unsafe { arm_thread_state.__sp });
-        registers.set(Register::PC, unsafe { arm_thread_state.__pc });
-        registers.set(Register::CPSR, unsafe { arm_thread_state.__cpsr });
+        registers.set(Register::X29, arm_thread_state.__fp);
+        registers.set(Register::X30, arm_thread_state.__lr);
+        registers.set(Register::SP, arm_thread_state.__sp);
+        registers.set(Register::PC, arm_thread_state.__pc);
+        registers.set(Register::CPSR, arm_thread_state.__cpsr);
         
         // Get NEON/FP registers if needed (disabled for now as it's more complex)
         // Getting NEON registers requires ARM_NEON_STATE64 in a separate call
@@ -347,7 +346,7 @@ impl MacosDebugger {
         for i in 0..29 {
             if let Some(reg) = Register::from_arm64_index(i) {
                 if let Some(value) = registers.get(reg) {
-                    unsafe { arm_thread_state.__x[i] = value; }
+                    arm_thread_state.__x[i] = value;
                 }
             }
         }

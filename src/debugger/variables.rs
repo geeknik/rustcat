@@ -3,9 +3,10 @@ use std::sync::{Arc, Mutex};
 use std::fmt;
 
 use anyhow::{Result, anyhow};
-use log::{debug, info, warn};
+use log::debug;
 
 use crate::debugger::symbols::SymbolTable;
+use goblin::{elf, mach, Object};
 
 /// Represents a variable's type
 #[derive(Debug, Clone, PartialEq)]
@@ -627,8 +628,8 @@ impl VariableManager {
                 match type_name {
                     "int" | "i32" => return Ok(VariableValue::Integer(0x12345678)),
                     "long" | "i64" => return Ok(VariableValue::Integer(0x1234567890ABCDEF)),
-                    "float" | "f32" => return Ok(VariableValue::Float(3.14159)),
-                    "double" | "f64" => return Ok(VariableValue::Float(2.71828)),
+                    "float" | "f32" => return Ok(VariableValue::Float(std::f64::consts::PI)),
+                    "double" | "f64" => return Ok(VariableValue::Float(std::f64::consts::E)),
                     "char" => return Ok(VariableValue::Char('A')),
                     "bool" => return Ok(VariableValue::Boolean(true)),
                     _ => return Err(anyhow!("Unsupported type in memory access: {}", type_name)),
@@ -737,8 +738,8 @@ impl VariableManager {
                             '+' => {
                                 if a >= 0 {
                                     Ok(VariableValue::UInteger(a as u64 + b))
-                                } else if b > a.abs() as u64 {
-                                    Ok(VariableValue::UInteger(b - a.abs() as u64))
+                                } else if b > a.unsigned_abs() {
+                                    Ok(VariableValue::UInteger(b - a.unsigned_abs()))
                                 } else {
                                     Ok(VariableValue::Integer(a + b as i64))
                                 }

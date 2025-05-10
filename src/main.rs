@@ -44,7 +44,7 @@ fn main() -> Result<()> {
     let mut program_args = Vec::new();
     let mut i = 1;
     
-    while i < args.len() {
+    if i < args.len() {
         match args[i].as_str() {
             // Version
             "-v" | "--version" => {
@@ -65,15 +65,9 @@ fn main() -> Result<()> {
                 target_program = arg.to_string();
                 
                 // Collect remaining arguments for the target program
-                for j in (i + 1)..args.len() {
-                    program_args.push(args[j].clone());
-                }
-                
-                break;
+                program_args = args.iter().skip(i + 1).cloned().collect();
             }
         }
-        
-        i += 1;
     }
     
     // Verify the target program exists

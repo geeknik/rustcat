@@ -200,7 +200,7 @@ impl Debugger {
                 self.state = DebuggerState::Stopped;
                 
                 // Check if we hit a breakpoint
-                if let Some(registers) = self.get_registers().ok() {
+                if let Ok(registers) = self.get_registers() {
                     if let Some(pc) = registers.get(crate::debugger::registers::Register::PC) {
                         // In x86, PC would point after the breakpoint instruction
                         // In ARM64, breakpoints are handled differently, but the concept is similar
@@ -733,13 +733,13 @@ impl Debugger {
             // or if this thread is at a breakpoint (prioritize breakpoints)
             if self.thread_manager.current_thread_id().is_none() || 
                (is_at_breakpoint && !self.thread_manager.any_thread_at_breakpoint()) {
-                self.thread_manager.set_current_thread(tid);
+                let _ = self.thread_manager.set_current_thread(tid);
             }
             
             // Update call stack if this is important thread (current or at breakpoint)
             if self.thread_manager.current_thread_id() == Some(tid) || is_at_breakpoint {
                 if let Ok(stack) = self.build_call_stack(tid) {
-                    self.thread_manager.update_call_stack(tid, stack);
+                    let _ = self.thread_manager.update_call_stack(tid, stack);
                 }
             }
         }
@@ -923,7 +923,7 @@ impl Debugger {
             debug!("Found {} threads in process {}", thread_ids.len(), pid);
             
             // Update thread manager
-            self.thread_manager.update_threads(thread_ids);
+            let _ = self.thread_manager.update_threads(thread_ids);
             
             Ok(())
         } else {

@@ -362,7 +362,7 @@ impl MemoryMap {
             let ascii: String = chunk
                 .iter()
                 .map(|&b| {
-                    if b >= 32 && b <= 126 {
+                    if (32..=126).contains(&b) {
                         b as char
                     } else {
                         '.'

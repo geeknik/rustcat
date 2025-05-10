@@ -789,7 +789,7 @@ impl App {
                 ];
                 
                 for func in functions {
-                    if input.find(' ').map_or(false, |pos| func.text.contains(&input[pos + 1..])) {
+                    if input.find(' ').is_some_and(|pos| func.text.contains(&input[pos + 1..])) {
                         completions.push(func);
                     }
                 }

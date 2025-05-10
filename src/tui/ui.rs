@@ -187,7 +187,7 @@ fn draw_main_area<B: Backend>(f: &mut Frame<B>, app: &mut App, area: Rect) {
                     .split(area);
                 
                 // Display memory data
-                draw_memory_view(f, app, chunks[0], Some(&data), address);
+                draw_memory_view(f, app, chunks[0], Some(data), address);
                 
                 // Display format selector
                 let format_names = [
@@ -313,7 +313,7 @@ fn draw_status_bar<B: Backend>(f: &mut Frame<B>, app: &mut App, area: Rect) {
     
     // Add function info if available
     let function_info = if let Some(func) = &app.current_function {
-        format!("{}", func)
+        func.to_string()
     } else {
         "No function".to_string()
     };

@@ -160,7 +160,7 @@ impl Disassembler {
                 let instr = Instruction::new(
                     address,
                     bytes[0..4].to_vec(),
-                    format!("bl 0x1004")
+                    "bl 0x1004".to_string()
                 )
                 .with_branch_target(0x1004)
                 .with_call();

@@ -1,8 +1,8 @@
-use std::collections::{HashMap, VecDeque};
+use std::collections::HashMap;
 use std::time::{Duration, Instant};
 use std::sync::{Arc, Mutex};
 use anyhow::{Result, anyhow};
-use log::{debug, info, error};
+use log::{debug, info};
 
 /// Represents a function call in the trace
 #[derive(Debug, Clone)]
@@ -224,7 +224,7 @@ impl FunctionTracer {
         let call_idx = self.calls.len() - 1;
         
         // Maintain the call stack for this thread
-        let call_stack = self.call_stacks.entry(thread_id).or_insert_with(Vec::new);
+        let call_stack = self.call_stacks.entry(thread_id).or_default();
         
         // If this isn't the first call in the stack, add it as a child of the parent
         if let Some(&parent_idx) = call_stack.last() {

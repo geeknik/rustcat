@@ -89,7 +89,7 @@ impl RegistersView {
     }
 
     pub fn render<B: Backend>(&self, f: &mut Frame<B>, area: Rect) {
-        let registers = vec![
+        let registers = [
             "rax: 0x0000000100000f24",
             "rbx: 0x0000000000000000",
             "rcx: 0x00007ff7bfeff680",
@@ -99,7 +99,7 @@ impl RegistersView {
             "rbp: 0x00007ff7bfeff6a0",
             "rsp: 0x00007ff7bfeff648",
             "r8:  0x0000000000000000",
-            "r9:  0x0000000000000000",
+            "r9:  0x0000000000000000"
         ];
         
         let items: Vec<ListItem> = registers
@@ -132,9 +132,9 @@ impl StackView {
     }
 
     pub fn render<B: Backend>(&self, f: &mut Frame<B>, area: Rect) {
-        let stack_frames = vec![
+        let stack_frames = [
             "#0 0x0000000100000f24 main()",
-            "#1 0x00007ff7bfc01014 start + 0",
+            "#1 0x00007ff7bfc01014 start + 0"
         ];
         
         let items: Vec<ListItem> = stack_frames
@@ -167,10 +167,10 @@ impl ThreadsView {
     }
 
     pub fn render<B: Backend>(&self, f: &mut Frame<B>, area: Rect) {
-        let threads = vec![
+        let threads = [
             "Thread 0x1103 (main)",
             "Thread 0x1503 (worker)",
-            "Thread 0x1703 (worker)",
+            "Thread 0x1703 (worker)"
         ];
         
         let items: Vec<ListItem> = threads
@@ -348,7 +348,7 @@ pub fn draw_memory_view<B: Backend>(
         }
         
         // Calculate total rows
-        let total_rows = (data.len() + bytes_per_row - 1) / bytes_per_row;
+        let total_rows = data.len().div_ceil(bytes_per_row);
         
         // Prepare rows of text
         let mut rows = Vec::with_capacity(visible_rows.min(total_rows));
@@ -368,18 +368,23 @@ pub fn draw_memory_view<B: Backend>(
             // Generate hex representation
             let mut hex_text = String::with_capacity(bytes_per_row * 3);
             let mut ascii_text = String::with_capacity(bytes_per_row);
+            let mut col_idx = 0;
             
-            for i in start_idx..end_idx {
-                let byte = data[i];
-                
-                // Add hex representation
+            for byte in data.iter().take(end_idx).skip(start_idx) {
+                // Add hex value of the byte
                 hex_text.push_str(&format!("{:02x} ", byte));
                 
-                // Add ASCII representation (only printable characters)
-                if (32..=126).contains(&byte) {
-                    ascii_text.push(byte as char);
+                // Add ASCII representation
+                if (32..=126).contains(byte) {
+                    ascii_text.push(*byte as char);
                 } else {
                     ascii_text.push('.');
+                }
+                
+                // Add space after every 8 bytes
+                col_idx += 1;
+                if col_idx % 8 == 0 && col_idx < bytes_per_row {
+                    hex_text.push_str("  ");
                 }
             }
             
@@ -682,7 +687,7 @@ pub fn draw_registers_view<B: Backend>(f: &mut Frame<B>, app: &App, area: Rect) 
         )),
     ];
     
-    let register_tabs = Tabs::new(titles.into_iter().map(Line::from).collect::<Vec<_>>())
+    let register_tabs = Tabs::new(titles.into_iter().collect::<Vec<_>>())
         .block(Block::default().borders(Borders::ALL).title("Register Groups"))
         .divider(symbols::line::VERTICAL)
         .highlight_style(Style::default().fg(Color::Yellow))
@@ -815,7 +820,7 @@ impl DisassemblyView {
                 let items: Vec<ListItem> = instructions.iter().enumerate().map(|(idx, ins)| {
                     // Check if this is the current instruction or selected
                     let is_current = ins.address == addr;
-                    let is_selected = selected_index.map_or(false, |selected| selected == idx);
+                    let is_selected = selected_index == Some(idx);
                     
                     // Style based on whether it's current or selected
                     let style = if is_current && is_selected {
@@ -1217,7 +1222,7 @@ pub fn draw_code_view<B: Backend>(f: &mut Frame<B>, area: Rect, lines: &[String]
         .iter()
         .enumerate()
         .map(|(i, line)| {
-            let style = if selected_line.map_or(false, |sel| sel == i) {
+            let style = if selected_line == Some(i) {
                 Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)
             } else {
                 Style::default()
