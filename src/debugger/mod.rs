@@ -6,3 +6,4 @@ pub mod symbols;
 pub mod threads;
 pub mod disasm;
 pub mod tracer;
+pub mod variables;

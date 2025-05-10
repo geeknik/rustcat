@@ -170,6 +170,7 @@ v0.3+
 	•	Thread pinning/debugging
 	•	Visual memory inspector (hex + ASCII)
 	•	Panic-safe runtime
+	•	Variable inspection and expression evaluation
 
 ⸻
 

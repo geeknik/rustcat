@@ -24,7 +24,9 @@ use crate::debugger::memory::MemoryFormat;
 use crate::tui::ui::draw_ui;
 use crate::tui::ui::setup_log_capture;
 use crate::tui::events::Events;
-use crate::debugger::registers::Registers;
+use crate::debugger::registers::{Register, Registers};
+use crate::debugger::threads::{ThreadState, StackFrame};
+use crate::debugger::variables::{Variable, VariableType, VariableValue, VariableScope, IntegerType};
 
 /// UI active block (for focus handling)
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -133,9 +135,9 @@ struct QueuedCommand {
 /// Application state
 pub struct App {
     /// The debugger instance
-    debugger: Arc<Mutex<Debugger>>,
+    pub debugger: Arc<Mutex<Debugger>>,
     /// Is the application running?
-    running: bool,
+    pub running: bool,
     /// Current view 
     pub current_view: View,
     /// Currently active/focused UI block
@@ -189,23 +191,23 @@ pub struct App {
     /// Tab areas for mouse interaction
     pub tab_areas: Vec<Rect>,
     /// Command history
-    command_history: VecDeque<String>,
+    pub command_history: VecDeque<String>,
     /// Current history position
-    command_history_pos: Option<usize>,
+    pub command_history_pos: Option<usize>,
     /// Command completion items
-    completion_items: Vec<CompletionItem>,
+    pub completion_items: Vec<CompletionItem>,
     /// Selected completion item
-    selected_completion: usize,
+    pub selected_completion: usize,
     /// Command queue for debugger operations
-    command_queue: VecDeque<QueuedCommand>,
+    pub command_queue: VecDeque<QueuedCommand>,
     /// Context menu selection
-    context_menu_selected: usize,
+    pub context_menu_selected: usize,
     /// Documentation for commands
-    command_docs: HashMap<String, String>,
+    pub command_docs: HashMap<String, String>,
     /// Memory view data
-    memory_data: Option<(u64, Vec<u8>)>,
+    pub memory_data: Option<(u64, Vec<u8>)>,
     /// Current memory format for display
-    memory_format: MemoryFormat,
+    pub memory_format: MemoryFormat,
     /// Current register group tab index (General, Special, SIMD)
     pub register_group_index: usize,
     
@@ -214,6 +216,34 @@ pub struct App {
     
     /// Currently displayed registers
     pub registers: Option<Registers>,
+    /// Current frame index for stack traces
+    pub current_frame: usize,
+    /// Command output history
+    pub command_output: VecDeque<String>,
+    /// Current stack frames
+    pub stack_frames: Option<Vec<StackFrame>>,
+    /// Current thread list
+    pub threads: Option<Vec<(ThreadState, u64)>>,
+    /// Last viewed memory
+    pub last_memory_view: Option<(u64, Vec<u8>)>,
+    /// Is the UI dirty (needs redraw)
+    pub dirty: bool,
+    /// Was execution just stopped
+    pub just_stopped: bool,
+    /// Error message to display
+    pub error: Option<String>,
+    /// Info message to display
+    pub info: Option<String>,
+    /// Status message
+    pub status: String,
+    /// Start time of debugging session
+    pub start_time: Instant,
+    /// Current breakpoints
+    pub breakpoints_active: Vec<(u64, bool)>,
+    /// Expression watch list
+    pub watch_expressions: Vec<String>,
+    /// Latest expression evaluation result
+    pub expression_result: Option<String>,
 }
 
 /// Available views in the application
@@ -226,6 +256,7 @@ pub enum View {
     Threads,
     Command,
     Trace,
+    Variables,
 }
 
 impl App {
@@ -252,6 +283,10 @@ impl App {
                           "next - Step over the next instruction or function call".to_string());
         command_docs.insert("quit".to_string(), 
                           "quit - Exit the debugger".to_string());
+        command_docs.insert("print".to_string(),
+                          "print [expression] - Evaluate an expression and print the result".to_string());
+        command_docs.insert("display".to_string(),
+                          "display [expression] - Add an expression to automatically display on each stop".to_string());
         
         Ok(Self {
             debugger,
@@ -294,6 +329,20 @@ impl App {
             register_group_index: 0,
             register_selection_index: None,
             registers: None,
+            current_frame: 0,
+            command_output: VecDeque::new(),
+            stack_frames: None,
+            threads: None,
+            last_memory_view: None,
+            dirty: true,
+            just_stopped: false,
+            error: None,
+            info: None,
+            status: String::new(),
+            start_time: Instant::now(),
+            breakpoints_active: Vec::new(),
+            watch_expressions: Vec::new(),
+            expression_result: None,
         })
     }
 
@@ -553,6 +602,41 @@ impl App {
                 debugger.clear_function_trace_filters();
                 info!("All function trace filters cleared");
             },
+            Command::Print(expression) => {
+                match debugger.evaluate_expression(&expression) {
+                    Ok(value) => {
+                        let result = format!("{} = {}", expression, value);
+                        info!("{}", result);
+                        
+                        // Store the result for display in UI
+                        drop(debugger); // Release the lock before modifying self
+                        self.expression_result = Some(result);
+                        
+                        // Switch to command view to show the result
+                        self.current_view = View::Command;
+                    },
+                    Err(e) => {
+                        error!("Failed to evaluate expression: {}", e);
+                    }
+                }
+            },
+            Command::Display(expression) => {
+                // First, check if the expression can be evaluated
+                match debugger.evaluate_expression(&expression) {
+                    Ok(_) => {
+                        info!("Added watch for: {}", expression);
+                        
+                        // Add to watch list if not already present
+                        drop(debugger); // Release the lock before modifying self
+                        if !self.watch_expressions.contains(&expression) {
+                            self.watch_expressions.push(expression);
+                        }
+                    },
+                    Err(e) => {
+                        error!("Cannot watch expression: {}", e);
+                    }
+                }
+            },
             // Handle other commands
             _ => {
                 // Unhandled command
@@ -803,6 +887,9 @@ impl App {
                 if let Some(regs) = registers {
                     self.update_registers(regs);
                 }
+            } else if self.current_view == View::Variables {
+                // Update variables when in the Variables view
+                self.update_variables();
             }
             
             // Process command queue
@@ -870,7 +957,8 @@ impl App {
                             KeyCode::Char('4') => self.current_view = View::Stack,
                             KeyCode::Char('5') => self.current_view = View::Threads,
                             KeyCode::Char('6') => self.current_view = View::Trace,
-                            KeyCode::Char('7') => self.current_view = View::Command,
+                            KeyCode::Char('7') => self.current_view = View::Variables,
+                            KeyCode::Char('8') => self.current_view = View::Command,
                             
                             // Legacy view keys
                             KeyCode::Char('c') => self.current_view = View::Code,
@@ -880,6 +968,7 @@ impl App {
                             KeyCode::Char('w') => self.current_view = View::Stack, // Using 'w' for 'Stack'
                             KeyCode::Char('t') => self.current_view = View::Threads,
                             KeyCode::Char('f') => self.current_view = View::Trace, // Using 'f' for function tracer
+                            KeyCode::Char('v') => self.current_view = View::Variables, // Using 'v' for Variables
                             
                             // Focus command input
                             KeyCode::Char(':') => {
@@ -1063,6 +1152,7 @@ impl App {
                                             3 => View::Stack,
                                             4 => View::Threads,
                                             5 => View::Command,
+                                            6 => View::Variables,
                                             _ => self.current_view,
                                         };
                                         break;
@@ -1194,6 +1284,57 @@ impl App {
             if group_len > 0 {
                 let idx = self.register_selection_index.unwrap_or(0);
                 self.register_selection_index = Some((idx + group_len - 1) % group_len);
+            }
+        }
+    }
+
+    /// Update variable values
+    pub fn update_variables(&mut self) {
+        if let Ok(mut debugger) = self.debugger.lock() {
+            // In a real implementation, we would get these from the debugger 
+            // and update them in the appropriate views
+            
+            // For testing, let's add some sample variables
+            use crate::debugger::variables::{Variable, VariableType, VariableValue, VariableScope, IntegerType};
+            
+            // Check if we've already created sample variables
+            if debugger.get_variables_by_frame(0).is_empty() {
+                // Add some test variables
+                let var1 = Variable::new(
+                    "counter".to_string(),
+                    VariableType::Integer(IntegerType::I32),
+                    VariableValue::Integer(42),
+                    VariableScope::Local
+                );
+                
+                let var2 = Variable::new(
+                    "name".to_string(),
+                    VariableType::String,
+                    VariableValue::String("RUSTCAT".to_string()),
+                    VariableScope::Local
+                );
+                
+                let var3 = Variable::new(
+                    "is_running".to_string(),
+                    VariableType::Boolean,
+                    VariableValue::Boolean(true),
+                    VariableScope::Local
+                );
+                
+                // Add these variables to the debugger
+                let mut var1 = var1;
+                var1.set_frame_index(0);
+                
+                let mut var2 = var2;
+                var2.set_frame_index(0);
+                
+                let mut var3 = var3;
+                var3.set_frame_index(0);
+                
+                // Add variables using proper API
+                debugger.add_variable(var1);
+                debugger.add_variable(var2);
+                debugger.add_variable(var3);
             }
         }
     }

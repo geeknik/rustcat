@@ -14,6 +14,7 @@ use crate::debugger::symbols::SymbolTable;
 use crate::debugger::threads::{ThreadManager, ThreadState, StackFrame};
 use crate::debugger::disasm::{Disassembler, Instruction};
 use crate::debugger::tracer::FunctionTracer;
+use crate::debugger::variables::{VariableManager, Variable, VariableValue};
 use crate::platform::macos::MacosDebugger;
 use crate::platform::dwarf::DwarfParser;
 
@@ -62,6 +63,8 @@ pub struct Debugger {
     disassembler: Disassembler,
     /// Function tracer
     tracer: FunctionTracer,
+    /// Variable manager
+    variable_manager: VariableManager,
 }
 
 impl Debugger {
@@ -82,6 +85,10 @@ impl Debugger {
         let mut tracer = FunctionTracer::new();
         tracer.set_symbol_resolver(Arc::clone(&symbols));
         
+        // Create variable manager
+        let mut variable_manager = VariableManager::new();
+        variable_manager.set_symbol_table(Arc::clone(&symbols));
+        
         Ok(Self {
             target_path: target_path.to_string(),
             args: Vec::new(),
@@ -97,6 +104,7 @@ impl Debugger {
             current_breakpoint: None,
             disassembler: Disassembler::new(),
             tracer,
+            variable_manager,
         })
     }
     
@@ -1033,6 +1041,37 @@ impl Debugger {
     /// Get function call statistics
     pub fn get_function_call_stats(&self) -> HashMap<String, (usize, Duration)> {
         self.tracer.get_statistics()
+    }
+
+    /// Get all variables in a specific stack frame
+    pub fn get_variables_by_frame(&self, frame_index: usize) -> Vec<&Variable> {
+        self.variable_manager.get_variables_by_frame(frame_index)
+    }
+
+    /// Evaluate a variable expression
+    pub fn evaluate_expression(&mut self, expression: &str) -> Result<VariableValue> {
+        if expression.trim().is_empty() {
+            return Err(anyhow!("Empty expression"));
+        }
+        
+        // Use process ID if available, otherwise pass 0 as a placeholder
+        let pid = self.pid.unwrap_or(0);
+        
+        // Attempt to evaluate the expression using the variable manager
+        let result = self.variable_manager.evaluate_expression(expression, pid);
+        
+        // Log the evaluation attempt
+        match &result {
+            Ok(value) => debug!("Evaluated expression '{}' = {:?}", expression, value),
+            Err(e) => debug!("Failed to evaluate expression '{}': {}", expression, e),
+        }
+        
+        result
+    }
+
+    /// Add a variable for inspection
+    pub fn add_variable(&mut self, variable: Variable) {
+        self.variable_manager.add_variable(variable);
     }
 }
 

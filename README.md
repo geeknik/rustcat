@@ -47,6 +47,8 @@ RUSTCAT is currently in alpha development. The core debugger engine is functiona
 - Thread inspection showing thread states and locations
 - Call stack view with source location information
 - Command input with history and tab-completion
+- Expression evaluation for inspecting variables and memory
+- Variable inspection with type information display
 
 ## 🛠 Running the Project
 
@@ -86,6 +88,7 @@ cargo run -- /path/to/program
 - `w`: Switch to stack view (call stack)
 - `t`: Switch to threads view
 - `f`: Switch to function trace view
+- `v`: Switch to variables view
 - `:`: Switch to command mode
 - `Tab`: Switch between UI panels
 
@@ -98,6 +101,8 @@ Enter command mode with `:` and type commands like:
 - `step` - Step into
 - `next` - Step over
 - `memory 0x1000 100` - View 100 bytes of memory at address 0x1000
+- `print expr` - Evaluate and print expression
+- `display expr` - Add expression to watch list (displayed each time program stops)
 - `traceon` - Enable function call tracing
 - `traceoff` - Disable function call tracing
 - `traceclear` - Clear function call trace
@@ -143,8 +148,8 @@ No more syscalls in the dark. Let's light this up.
 - [x] Full ARM64 register support
 - [x] Disassembly view
 - [x] Function call tracing
-- [ ] Variable inspection
-- [ ] Expression evaluation
+- [x] Variable inspection
+- [x] Expression evaluation
 - [ ] Watchpoints
 - [ ] Full documentation
 

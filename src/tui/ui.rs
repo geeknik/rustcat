@@ -11,7 +11,7 @@ use ratatui::{
 use std::sync::mpsc;
 
 use crate::tui::app::{App, View, ActiveBlock, LogFilter};
-use crate::tui::views::{CodeView, CommandView, draw_memory_view, draw_thread_view, draw_call_stack_view, draw_registers_view, draw_trace_view};
+use crate::tui::views::{CodeView, CommandView, draw_memory_view, draw_thread_view, draw_call_stack_view, draw_registers_view, draw_trace_view, VariablesView};
 use crate::debugger::memory::MemoryFormat;
 
 /// Set up log capturing for UI display
@@ -125,7 +125,14 @@ fn draw_title_bar<B: Backend>(f: &mut Frame<B>, app: &mut App, area: Rect) {
                 Style::default()
             }
         ),
-        Span::styled("[7] Command", 
+        Span::styled("[7] Variables", 
+            if matches!(app.current_view, View::Variables) { 
+                Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)
+            } else { 
+                Style::default()
+            }
+        ),
+        Span::styled("[8] Command", 
             if matches!(app.current_view, View::Command) { 
                 Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)
             } else { 
@@ -151,7 +158,8 @@ fn draw_title_bar<B: Backend>(f: &mut Frame<B>, app: &mut App, area: Rect) {
             View::Stack => 3,
             View::Threads => 4,
             View::Trace => 5,
-            View::Command => 6,
+            View::Variables => 6,
+            View::Command => 7,
         });
     
     f.render_widget(tabs, area);
@@ -216,9 +224,14 @@ fn draw_main_area<B: Backend>(f: &mut Frame<B>, app: &mut App, area: Rect) {
             // Use our function call trace view
             draw_trace_view(f, app, area);
         },
+        View::Variables => {
+            // Use the variables view
+            let variables_view = VariablesView::new();
+            variables_view.render(f, area, app);
+        },
         View::Command => {
             let command_view = CommandView::new();
-            command_view.render(f, area);
+            command_view.render(f, area, app);
         },
     }
 }

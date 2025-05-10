@@ -8,12 +8,14 @@ use ratatui::{
     Frame,
 };
 
-use crate::tui::app::{App, View};
+use crate::tui::app::{App, View, ActiveBlock};
 use crate::debugger::memory::MemoryFormat;
 use crate::debugger::threads::{ThreadState};
 use crate::debugger::registers::{RegisterGroup, Register};
 use crate::debugger::core::Debugger;
 use crate::debugger::disasm::Instruction;
+use std::sync::{Arc, Mutex};
+use std::collections::HashMap;
 
 /// View for the code display
 pub struct CodeView;
@@ -167,19 +169,96 @@ impl CommandView {
         Self
     }
 
-    pub fn render<B: Backend>(&self, f: &mut Frame<B>, area: Rect) {
-        let text = vec![
-            Line::from(vec![
-                Span::raw("> "),
-                Span::styled("break main", Style::default().fg(Color::Yellow)),
-            ]),
-        ];
+    pub fn render<B: Backend>(&self, f: &mut Frame<B>, area: Rect, app: &App) {
+        let block = Block::default()
+            .title(Span::styled(
+                "Command",
+                Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD),
+            ))
+            .borders(Borders::ALL)
+            .border_style(Style::default().fg(if app.current_view == View::Command {
+                Color::Green
+            } else {
+                Color::Gray
+            }));
         
-        let paragraph = Paragraph::new(text)
-            .block(Block::default().borders(Borders::ALL).title("Command"))
-            .style(Style::default().fg(Color::White));
+        let inner_area = block.inner(area);
+        f.render_widget(block, area);
         
-        f.render_widget(paragraph, area);
+        // Create a list of command output and history to display
+        let mut items = Vec::new();
+        
+        // Display the expression evaluation result if available
+        if let Some(result) = &app.expression_result {
+            items.push(ListItem::new(vec![Line::from(vec![
+                Span::styled("Result: ", Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)),
+                Span::styled(result, Style::default().fg(Color::LightGreen)),
+            ])].into_iter().collect::<Vec<Line>>()));
+            
+            // Add a separator
+            items.push(ListItem::new(vec![Line::from(vec![
+                Span::styled("─".repeat(inner_area.width as usize), Style::default().fg(Color::DarkGray))
+            ])].into_iter().collect::<Vec<Line>>()));
+        }
+        
+        // Add command history if available
+        if !app.command_history.is_empty() {
+            items.push(ListItem::new(vec![Line::from(vec![
+                Span::styled("Command History", Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD))
+            ])].into_iter().collect::<Vec<Line>>()));
+            
+            // Add the most recent commands (up to 10)
+            let num_items = std::cmp::min(app.command_history.len(), 10);
+            let start_idx = app.command_history.len().saturating_sub(num_items);
+            
+            for i in start_idx..app.command_history.len() {
+                let cmd = &app.command_history[i];
+                items.push(ListItem::new(vec![Line::from(vec![
+                    Span::styled(format!("{}: ", i - start_idx + 1), Style::default().fg(Color::DarkGray)),
+                    Span::styled(cmd, Style::default().fg(Color::White)),
+                ])].into_iter().collect::<Vec<Line>>()));
+            }
+        }
+        
+        // Add command input display
+        let command_prompt = if app.active_block == ActiveBlock::CommandInput {
+            format!("> {}", app.command_input)
+        } else {
+            String::from("> ")
+        };
+        
+        // If there are no items, at least show the prompt
+        if items.is_empty() {
+            items.push(ListItem::new(vec![Line::from(vec![
+                Span::styled("Type a command and press Enter", Style::default().fg(Color::Gray)),
+            ])].into_iter().collect::<Vec<Line>>()));
+        }
+        
+        let list = List::new(items)
+            .block(Block::default())
+            .highlight_style(Style::default().bg(Color::DarkGray))
+            .highlight_symbol("> ");
+        
+        f.render_widget(list, inner_area);
+        
+        // Display the command prompt at the bottom if we're in command input mode
+        if app.active_block == ActiveBlock::CommandInput {
+            let prompt_layout = Layout::default()
+                .direction(Direction::Vertical)
+                .constraints([
+                    Constraint::Length(inner_area.height.saturating_sub(1)),
+                    Constraint::Length(1),
+                ])
+                .split(inner_area);
+            
+            let prompt = Paragraph::new(Line::from(vec![
+                Span::styled("> ", Style::default().fg(Color::Green)),
+                Span::styled(&app.command_input, Style::default().fg(Color::White)),
+            ]))
+            .style(Style::default());
+            
+            f.render_widget(prompt, prompt_layout[1]);
+        }
     }
 }
 
@@ -933,5 +1012,155 @@ pub fn draw_trace_view<B: Backend>(
             .style(Style::default().fg(Color::Red));
         
         f.render_widget(paragraph, inner_stats_area);
+    }
+}
+
+/// View for the variables display
+pub struct VariablesView;
+
+impl VariablesView {
+    pub fn new() -> Self {
+        Self
+    }
+    
+    pub fn render<B: Backend>(&self, f: &mut Frame<B>, area: Rect, app: &App) {
+        let block = Block::default()
+            .title(Span::styled(
+                "Variables",
+                Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD),
+            ))
+            .borders(Borders::ALL)
+            .border_style(Style::default().fg(if app.current_view == View::Variables {
+                Color::Green
+            } else {
+                Color::Gray
+            }));
+        
+        let inner_area = block.inner(area);
+        f.render_widget(block, area);
+        
+        // Try to get the debugger, but handle the case when it's locked
+        match app.debugger.try_lock() {
+            Ok(debugger) => {
+                // Get current frame index
+                let frame_index = app.current_frame;
+                
+                // Create a list of variables to display
+                let mut items = Vec::new();
+                
+                // First, show watch expressions if any
+                if !app.watch_expressions.is_empty() {
+                    items.push(ListItem::new(vec![Line::from(vec![
+                        Span::styled("Watched Expressions", Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD))
+                    ])].into_iter().collect::<Vec<Line>>()));
+                    
+                    // Get frame variables before we drop the debugger
+                    let frame_vars = debugger.get_variables_by_frame(frame_index);
+                    
+                    // Release the immutable borrow to evaluate expressions
+                    drop(debugger);
+                    
+                    // Process each watch expression with its own debugger lock
+                    for expr in &app.watch_expressions {
+                        let expr_result = if let Ok(mut debugger) = app.debugger.try_lock() {
+                            match debugger.evaluate_expression(expr) {
+                                Ok(value) => format!("{} = {}", expr, value),
+                                Err(_) => format!("{} = <error>", expr),
+                            }
+                        } else {
+                            format!("{} = <unavailable>", expr)
+                        };
+                        
+                        items.push(ListItem::new(vec![Line::from(vec![
+                            Span::styled(expr_result, Style::default().fg(Color::LightCyan))
+                        ])].into_iter().collect::<Vec<Line>>()));
+                    }
+                    
+                    // Add a separator
+                    items.push(ListItem::new(vec![Line::from(vec![
+                        Span::styled("─".repeat(inner_area.width as usize), Style::default().fg(Color::DarkGray))
+                    ])].into_iter().collect::<Vec<Line>>()));
+                    
+                    // Add a header for regular variables
+                    items.push(ListItem::new(vec![Line::from(vec![
+                        Span::styled("Local Variables", Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD))
+                    ])].into_iter().collect::<Vec<Line>>()));
+                    
+                    // Re-acquire the debugger to show variables
+                    if let Ok(debugger) = app.debugger.try_lock() {
+                        // Get variables again with the new lock
+                        let frame_vars = debugger.get_variables_by_frame(frame_index);
+                        
+                        if !frame_vars.is_empty() {
+                            for var in frame_vars {
+                                // Format the variable for display
+                                let mut line_style = Style::default();
+                                if var.has_changed() {
+                                    line_style = line_style.fg(Color::Yellow);
+                                }
+                                
+                                items.push(ListItem::new(vec![Line::from(vec![
+                                    Span::styled(var.format(), line_style)
+                                ])].into_iter().collect::<Vec<Line>>()));
+                            }
+                        } else {
+                            items.push(ListItem::new(vec![Line::from(vec![
+                                Span::styled("No local variables in this frame", Style::default().fg(Color::Gray))
+                            ])].into_iter().collect::<Vec<Line>>()));
+                        }
+                    } else {
+                        // Couldn't reacquire the debugger
+                        items.push(ListItem::new(vec![Line::from(vec![
+                            Span::styled("Cannot access debugger to show variables", Style::default().fg(Color::Red))
+                        ])].into_iter().collect::<Vec<Line>>()));
+                    }
+                } else {
+                    // No watch expressions - just show variables
+                    // Get variables for the current frame
+                    let frame_vars = debugger.get_variables_by_frame(frame_index);
+                    
+                    if !frame_vars.is_empty() {
+                        for var in frame_vars {
+                            // Format the variable for display
+                            let mut line_style = Style::default();
+                            if var.has_changed() {
+                                line_style = line_style.fg(Color::Yellow);
+                            }
+                            
+                            items.push(ListItem::new(vec![Line::from(vec![
+                                Span::styled(var.format(), line_style)
+                            ])].into_iter().collect::<Vec<Line>>()));
+                        }
+                    } else {
+                        items.push(ListItem::new(vec![Line::from(vec![
+                            Span::styled("No variables available in this frame", Style::default().fg(Color::Gray))
+                        ])].into_iter().collect::<Vec<Line>>()));
+                    }
+                }
+                
+                // If no items to display at all
+                if items.is_empty() {
+                    items.push(ListItem::new(vec![Line::from(vec![
+                        Span::styled("No variables or watch expressions available", Style::default().fg(Color::Gray))
+                    ])].into_iter().collect::<Vec<Line>>()));
+                }
+                
+                let list = List::new(items)
+                    .block(Block::default())
+                    .highlight_style(Style::default().bg(Color::DarkGray))
+                    .highlight_symbol("> ");
+                
+                f.render_widget(list, inner_area);
+            },
+            Err(_) => {
+                // Draw an error message if we can't get the debugger
+                let message = Paragraph::new("Cannot access debugger - it might be busy")
+                    .style(Style::default().fg(Color::Red))
+                    .alignment(Alignment::Center)
+                    .block(Block::default());
+                
+                f.render_widget(message, inner_area);
+            }
+        }
     }
 }
