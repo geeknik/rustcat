@@ -8,7 +8,7 @@ use std::sync::mpsc;
 
 use anyhow::{Result, Context, anyhow};
 use crossterm::event::{Event, KeyCode, KeyModifiers, MouseEventKind, MouseButton};
-use crossterm::terminal::{disable_raw_mode, enable_raw_mode};
+use crossterm::terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen};
 use crossterm::execute;
 use crossterm::event::EnableMouseCapture;
 use crossterm::event::DisableMouseCapture;
@@ -24,6 +24,7 @@ use crate::debugger::memory::MemoryFormat;
 use crate::tui::ui::draw_ui;
 use crate::tui::ui::setup_log_capture;
 use crate::tui::events::Events;
+use crate::debugger::registers::Registers;
 
 /// UI active block (for focus handling)
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -198,6 +199,14 @@ pub struct App {
     memory_data: Option<(u64, Vec<u8>)>,
     /// Current memory format for display
     memory_format: MemoryFormat,
+    /// Current register group tab index (General, Special, SIMD)
+    pub register_group_index: usize,
+    
+    /// Current register selection index within a group
+    pub register_selection_index: Option<usize>,
+    
+    /// Currently displayed registers
+    pub registers: Option<Registers>,
 }
 
 /// Available views in the application
@@ -274,6 +283,9 @@ impl App {
             command_docs: command_docs,
             memory_data: None,
             memory_format: MemoryFormat::Hex,
+            register_group_index: 0,
+            register_selection_index: None,
+            registers: None,
         })
     }
 
@@ -723,21 +735,36 @@ impl App {
         }
     }
     
-    /// Run the application main loop
+    /// Run the application
     pub fn run(&mut self) -> Result<()> {
-        // Setup terminal
-        enable_raw_mode()?;
-        let mut stdout = io::stdout();
-        execute!(stdout, EnableMouseCapture)?;
-        
+        // Set up terminal
+        enable_raw_mode().context("Failed to enable raw mode")?;
+        let mut stdout = std::io::stdout();
+        execute!(stdout, EnterAlternateScreen, EnableMouseCapture)?;
         let backend = CrosstermBackend::new(stdout);
         let mut terminal = Terminal::new(backend)?;
-        terminal.clear()?;
-
+        
         // Main loop
         while self.running {
             // Process any new log messages
             self.process_log_messages();
+            
+            // Update registers if we're on the registers view
+            if self.current_view == View::Registers {
+                // Use a temporary register value
+                let registers = {
+                    if let Ok(debugger) = self.debugger.lock() {
+                        debugger.get_registers().ok()
+                    } else {
+                        None
+                    }
+                };
+                
+                // Now update the register value if we got it
+                if let Some(regs) = registers {
+                    self.update_registers(regs);
+                }
+            }
             
             // Process command queue
             if let Err(e) = self.process_command_queue() {
@@ -754,30 +781,30 @@ impl App {
                 terminal.draw(|f| draw_ui(f, self))?;
                 self.last_refresh = now;
             }
-
+            
             // Handle input (non-blocking)
             if let Ok(event) = self.events.next() {
                 self.handle_input(event)?;
             }
         }
-
+        
         // Restore terminal
         disable_raw_mode()?;
-        let mut stdout = io::stdout();
+        let mut stdout = std::io::stdout();
         execute!(stdout, DisableMouseCapture)?;
         terminal.clear()?;
-
+        
         Ok(())
     }
 
     /// Handle input events
     fn handle_input(&mut self, event: Event) -> Result<()> {
         match event {
-            Event::Key(key_event) => {
+            Event::Key(key) => {
                 // Global key handler regardless of active block
-                match key_event.code {
+                match key.code {
                     // Quit - Global
-                    KeyCode::Char('q') if key_event.modifiers.is_empty() => {
+                    KeyCode::Char('q') if key.modifiers.is_empty() => {
                         self.running = false;
                         return Ok(());
                     },
@@ -796,7 +823,7 @@ impl App {
                 // Active block specific handlers
                 match self.active_block {
                     ActiveBlock::MainView => {
-                        match key_event.code {
+                        match key.code {
                             // Change view with number keys
                             KeyCode::Char('1') => self.current_view = View::Code,
                             KeyCode::Char('2') => self.current_view = View::Memory,
@@ -842,7 +869,7 @@ impl App {
                     },
                     
                     ActiveBlock::CommandInput => {
-                        match key_event.code {
+                        match key.code {
                             KeyCode::Up => {
                                 if let Some(pos) = self.command_history_pos {
                                     if pos > 0 {
@@ -901,7 +928,7 @@ impl App {
                     },
                     
                     ActiveBlock::LogView => {
-                        match key_event.code {
+                        match key.code {
                             KeyCode::Up => {
                                 if self.log_scroll > 0 {
                                     self.log_scroll -= 1;
@@ -927,18 +954,18 @@ impl App {
                                 let max_scroll = self.filtered_logs().len().saturating_sub(1);
                                 self.log_scroll = max_scroll;
                             },
-                            KeyCode::Char('f') if key_event.modifiers.contains(KeyModifiers::CONTROL) => {
+                            KeyCode::Char('f') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                                 self.ui_mode = UiMode::LogSearch;
                                 self.command_input.clear(); // Reuse command input for search
                                 self.active_block = ActiveBlock::CommandInput;
                             },
-                            KeyCode::Char('n') if key_event.modifiers.contains(KeyModifiers::CONTROL) => {
+                            KeyCode::Char('n') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                                 self.next_search_result();
                             },
-                            KeyCode::Char('p') if key_event.modifiers.contains(KeyModifiers::CONTROL) => {
+                            KeyCode::Char('p') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                                 self.prev_search_result();
                             },
-                            KeyCode::Char('e') if key_event.modifiers.contains(KeyModifiers::CONTROL) => {
+                            KeyCode::Char('e') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                                 // Export logs with timestamp in filename
                                 let timestamp = chrono::Local::now().format("%Y%m%d_%H%M%S").to_string();
                                 let filename = format!("rustcat_logs_{}.log", timestamp);
@@ -951,7 +978,7 @@ impl App {
                                     self.log_messages.push_back(format!("[{}] [INFO] Logs exported to {}", timestamp, filename));
                                 }
                             },
-                            KeyCode::Char('l') if key_event.modifiers.contains(KeyModifiers::CONTROL) => {
+                            KeyCode::Char('l') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                                 // Cycle log filter
                                 self.cycle_log_filter();
                             },
@@ -961,25 +988,25 @@ impl App {
                 }
             },
             
-            Event::Mouse(mouse_event) => {
-                self.mouse_position = (mouse_event.column, mouse_event.row);
+            Event::Mouse(mouse) => {
+                self.mouse_position = (mouse.column, mouse.row);
                 
                 // Handle different mouse modes
                 match self.ui_mode {
                     UiMode::ContextMenu => {
-                        if let MouseEventKind::Down(MouseButton::Left) = mouse_event.kind {
+                        if let MouseEventKind::Down(MouseButton::Left) = mouse.kind {
                             // Handle context menu selection
                             // We would select menu item based on position
                             self.ui_mode = UiMode::Normal;
                             self.context_menu_position = None;
-                        } else if let MouseEventKind::Down(MouseButton::Right) = mouse_event.kind {
+                        } else if let MouseEventKind::Down(MouseButton::Right) = mouse.kind {
                             // Right click again to dismiss
                             self.ui_mode = UiMode::Normal;
                             self.context_menu_position = None;
                         }
                     },
                     _ => {
-                        match mouse_event.kind {
+                        match mouse.kind {
                             MouseEventKind::Down(MouseButton::Left) => {
                                 // Check if click is in tab area
                                 for (idx, area) in self.tab_areas.iter().enumerate() {
@@ -1072,5 +1099,61 @@ impl App {
     /// Get reference to the debugger
     pub fn get_debugger(&self) -> &Arc<Mutex<Debugger>> {
         &self.debugger
+    }
+
+    /// Get the current register values
+    pub fn get_registers(&self) -> Option<&Registers> {
+        self.registers.as_ref()
+    }
+    
+    /// Update register values
+    pub fn update_registers(&mut self, registers: Registers) {
+        self.registers = Some(registers);
+    }
+    
+    /// Select the next register group
+    pub fn next_register_group(&mut self) {
+        self.register_group_index = (self.register_group_index + 1) % 3; // 3 groups
+        self.register_selection_index = None; // Reset selection
+    }
+    
+    /// Select the previous register group
+    pub fn previous_register_group(&mut self) {
+        self.register_group_index = (self.register_group_index + 2) % 3; // 3 groups
+        self.register_selection_index = None; // Reset selection
+    }
+    
+    /// Select the next register in the current group
+    pub fn next_register(&mut self) {
+        if let Some(registers) = &self.registers {
+            let group_len = match self.register_group_index {
+                0 => 31, // General purpose (X0-X30)
+                1 => 3,  // Special (SP, PC, CPSR)
+                2 => 32, // SIMD (Q0-Q31)
+                _ => 0,
+            };
+            
+            if group_len > 0 {
+                let idx = self.register_selection_index.unwrap_or(0);
+                self.register_selection_index = Some((idx + 1) % group_len);
+            }
+        }
+    }
+    
+    /// Select the previous register in the current group
+    pub fn previous_register(&mut self) {
+        if let Some(registers) = &self.registers {
+            let group_len = match self.register_group_index {
+                0 => 31, // General purpose (X0-X30)
+                1 => 3,  // Special (SP, PC, CPSR)
+                2 => 32, // SIMD (Q0-Q31)
+                _ => 0,
+            };
+            
+            if group_len > 0 {
+                let idx = self.register_selection_index.unwrap_or(0);
+                self.register_selection_index = Some((idx + group_len - 1) % group_len);
+            }
+        }
     }
 }

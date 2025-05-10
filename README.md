@@ -67,6 +67,8 @@ cargo run -- /path/to/program
 - Apple Silicon M1/M2/M3 (ARM64)
 - Rust and Cargo installed
 
+**Note:** While RUSTCAT is designed specifically for macOS on Apple Silicon, the codebase can be built on other platforms for development and contribution purposes. However, debugging functionality will only be available on macOS.
+
 ## Keyboard Controls
 
 - `q`: Quit
@@ -128,7 +130,7 @@ No more syscalls in the dark. Let's light this up.
   - [x] Source line mapping
   - [x] Function info
   - [x] Source code viewing
-- [ ] Full ARM64 register support
+- [x] Full ARM64 register support
 - [ ] Disassembly view
 - [ ] Function call tracing
 - [ ] Variable inspection

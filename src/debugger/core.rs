@@ -7,7 +7,7 @@ use log::{info, warn, debug, error};
 
 use crate::debugger::breakpoint::{Breakpoint, BreakpointManager, BreakpointType, ConditionEvaluator};
 use crate::debugger::memory::{MemoryMap, MemoryFormat};
-use crate::debugger::registers::Registers;
+use crate::debugger::registers::{Registers, Register};
 use crate::debugger::symbols::SymbolTable;
 use crate::debugger::threads::{ThreadManager, ThreadState, StackFrame};
 use crate::platform::macos::MacosDebugger;
@@ -361,7 +361,7 @@ impl Debugger {
         self.breakpoints.find_by_address(address).map(|(_, bp)| bp)
     }
     
-    /// Get the current registers
+    /// Get the registers for the current thread
     pub fn get_registers(&self) -> Result<Registers> {
         if let Some(pid) = self.pid {
             self.platform.get_registers(pid)
@@ -370,12 +370,28 @@ impl Debugger {
         }
     }
     
-    /// Set the registers
+    /// Set the registers for the current thread
     pub fn set_registers(&self, registers: &Registers) -> Result<()> {
         if let Some(pid) = self.pid {
             self.platform.set_registers(pid, registers)
         } else {
             Err(anyhow!("Cannot set registers: program not loaded"))
+        }
+    }
+    
+    /// Update a specific register value
+    pub fn update_register(&self, register: Register, value: u64) -> Result<()> {
+        if let Some(pid) = self.pid {
+            // Get current registers
+            let mut registers = self.platform.get_registers(pid)?;
+            
+            // Update the specific register
+            registers.set(register, value);
+            
+            // Write back the updated registers
+            self.platform.set_registers(pid, &registers)
+        } else {
+            Err(anyhow!("Cannot update register: program not loaded"))
         }
     }
     

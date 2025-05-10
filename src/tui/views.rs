@@ -1,15 +1,17 @@
 use ratatui::{
     backend::Backend,
-    layout::{Rect, Alignment},
+    layout::{Rect, Alignment, Layout, Constraint, Direction},
     style::{Color, Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, Borders, List, ListItem, Paragraph, Table, Row, Cell},
+    widgets::{Block, Borders, List, ListItem, Paragraph, Table, Row, Cell, Tabs, ListState},
+    symbols,
     Frame,
 };
 
 use crate::tui::app::{App, View};
 use crate::debugger::memory::MemoryFormat;
 use crate::debugger::threads::{ThreadState};
+use crate::debugger::registers::{RegisterGroup, Register};
 
 /// View for the code display
 pub struct CodeView;
@@ -525,4 +527,128 @@ pub fn draw_call_stack_view<B: Backend>(
         
         f.render_widget(paragraph, inner_area);
     }
+}
+
+/// Draw the registers view
+pub fn draw_registers_view<B: Backend>(f: &mut Frame<B>, app: &App, area: Rect) {
+    // Get register values from the app
+    let registers = app.get_registers();
+    
+    // Create a layout with tabs for register groups
+    let tabs_layout = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(3),     // Tabs
+            Constraint::Min(5),        // Register content
+        ])
+        .split(area);
+    
+    // Create tabs for register groups
+    let titles = vec![
+        Span::styled("General", 
+            if app.register_group_index == 0 { 
+                Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)
+            } else { 
+                Style::default()
+            }
+        ),
+        Span::styled("Special", 
+            if app.register_group_index == 1 { 
+                Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)
+            } else { 
+                Style::default()
+            }
+        ),
+        Span::styled("Vector", 
+            if app.register_group_index == 2 { 
+                Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)
+            } else { 
+                Style::default()
+            }
+        ),
+    ];
+    
+    let register_tabs = Tabs::new(vec![Line::from(titles)])
+        .block(Block::default().borders(Borders::ALL).title("Register Groups"))
+        .divider(symbols::line::VERTICAL)
+        .highlight_style(Style::default().fg(Color::Yellow))
+        .select(app.register_group_index);
+    
+    f.render_widget(register_tabs, tabs_layout[0]);
+    
+    // Get the selected group
+    let group = match app.register_group_index {
+        0 => RegisterGroup::General,
+        1 => RegisterGroup::Special,
+        2 => RegisterGroup::Vector,
+        _ => RegisterGroup::General,
+    };
+    
+    // Get registers for the selected group
+    let mut register_items = Vec::new();
+    
+    if let Some(registers) = registers {
+        let regs = registers.get_registers_by_group(group);
+        
+        for (reg, value) in regs {
+            let value_text = match value {
+                Some(val) => format!("0x{:016x}", val),
+                None => "N/A".to_string(),
+            };
+            
+            let abi_info = match reg.abi_name() {
+                Some(name) => format!("({})", name),
+                None => "".to_string(),
+            };
+            
+            let style = if registers.is_dirty(reg) {
+                Style::default().fg(Color::Yellow)
+            } else {
+                Style::default()
+            };
+            
+            register_items.push(
+                ListItem::new(
+                    Line::from(vec![
+                        Span::styled(format!("{:<5}", reg.display_name()), style.add_modifier(Modifier::BOLD)),
+                        Span::raw(" "),
+                        Span::styled(value_text, style),
+                        Span::raw(" "),
+                        Span::styled(abi_info, Style::default().fg(Color::Gray)),
+                    ])
+                )
+            );
+        }
+    } else {
+        // No register data available
+        register_items.push(
+            ListItem::new(
+                Line::from(vec![
+                    Span::styled("No register data available", Style::default().fg(Color::Red)),
+                ])
+            )
+        );
+    }
+    
+    // Create scroll state
+    let mut register_list_state = ListState::default();
+    register_list_state.select(app.register_selection_index);
+    
+    // Create the register list
+    let register_list = List::new(register_items)
+        .block(
+            Block::default()
+                .title(format!("{} Registers", group))
+                .borders(Borders::ALL)
+                .border_style(
+                    Style::default().fg(Color::White)
+                )
+        )
+        .highlight_style(
+            Style::default()
+                .bg(Color::DarkGray)
+                .add_modifier(Modifier::BOLD)
+        );
+    
+    f.render_stateful_widget(register_list, tabs_layout[1], &mut register_list_state);
 }

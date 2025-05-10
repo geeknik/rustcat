@@ -7,7 +7,7 @@ use std::path::Path;
 use std::process;
 
 use anyhow::{anyhow, Result};
-use log::{info, error, LevelFilter};
+use log::{info, warn, error, LevelFilter};
 
 use debugger::core::Debugger;
 use tui::app::App;
@@ -22,6 +22,13 @@ fn main() -> Result<()> {
         .init();
     
     info!("Starting RUSTCAT v0.1.0");
+    
+    // Check if running on macOS
+    #[cfg(not(target_os = "macos"))]
+    {
+        warn!("RUSTCAT is designed for macOS only. Limited functionality available on this platform.");
+        println!("⚠️  WARNING: RUSTCAT is designed for macOS only and will have limited functionality on this platform.");
+    }
     
     // Parse command line arguments
     let args: Vec<String> = env::args().collect();

@@ -11,7 +11,7 @@ use ratatui::{
 use std::sync::mpsc;
 
 use crate::tui::app::{App, View, ActiveBlock, LogFilter};
-use crate::tui::views::{CodeView, CommandView, draw_memory_view, draw_thread_view, draw_call_stack_view};
+use crate::tui::views::{CodeView, CommandView, draw_memory_view, draw_thread_view, draw_call_stack_view, draw_registers_view};
 use crate::debugger::memory::MemoryFormat;
 
 /// Set up log capturing for UI display
@@ -49,7 +49,7 @@ pub fn setup_log_capture() -> mpsc::Receiver<String> {
 }
 
 /// Main UI drawing function
-pub fn draw_ui<B: Backend>(f: &mut Frame<B>, app: &App) {
+pub fn draw_ui<B: Backend>(f: &mut Frame<B>, app: &mut App) {
     // Create main layout with 4 parts:
     // 1. Title bar with tabs (top)
     // 2. Main content area (middle)
@@ -80,7 +80,7 @@ pub fn draw_ui<B: Backend>(f: &mut Frame<B>, app: &App) {
 }
 
 /// Draw the title bar with tabs
-fn draw_title_bar<B: Backend>(f: &mut Frame<B>, app: &App, area: Rect) {
+fn draw_title_bar<B: Backend>(f: &mut Frame<B>, app: &mut App, area: Rect) {
     // Create enhanced tab titles with keyboard shortcut hints
     let titles = vec![
         Span::styled("[1] Code", 
@@ -150,7 +150,7 @@ fn draw_title_bar<B: Backend>(f: &mut Frame<B>, app: &App, area: Rect) {
 }
 
 /// Draw the main content area based on current view
-fn draw_main_area<B: Backend>(f: &mut Frame<B>, app: &App, area: Rect) {
+fn draw_main_area<B: Backend>(f: &mut Frame<B>, app: &mut App, area: Rect) {
     match app.current_view {
         View::Code => {
             let code_view = CodeView::new();
@@ -194,19 +194,7 @@ fn draw_main_area<B: Backend>(f: &mut Frame<B>, app: &App, area: Rect) {
             }
         },
         View::Registers => {
-            // Basic rendering for now
-            let text = vec![
-                Line::from("Register View".to_string()),
-                Line::from(""),
-                Line::from("Press 'r' to refresh registers"),
-            ];
-            
-            let paragraph = Paragraph::new(text)
-                .style(Style::default())
-                .alignment(Alignment::Left)
-                .block(Block::default().borders(Borders::ALL).title("Registers"));
-            
-            f.render_widget(paragraph, area);
+            draw_registers_view(f, app, area);
         },
         View::Threads => {
             // Use our enhanced thread view
@@ -224,7 +212,7 @@ fn draw_main_area<B: Backend>(f: &mut Frame<B>, app: &App, area: Rect) {
 }
 
 /// Draw the log area
-fn draw_log_area<B: Backend>(f: &mut Frame<B>, app: &App, area: Rect) {
+fn draw_log_area<B: Backend>(f: &mut Frame<B>, app: &mut App, area: Rect) {
     // Get filtered logs based on current filter level
     let filtered_logs = app.filtered_logs();
     
@@ -281,7 +269,7 @@ fn draw_log_area<B: Backend>(f: &mut Frame<B>, app: &App, area: Rect) {
 }
 
 /// Draw the status bar with enhanced information
-fn draw_status_bar<B: Backend>(f: &mut Frame<B>, app: &App, area: Rect) {
+fn draw_status_bar<B: Backend>(f: &mut Frame<B>, app: &mut App, area: Rect) {
     // Create the status indicators
     let status_style = if app.program_running {
         Style::default().fg(Color::Green)

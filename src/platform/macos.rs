@@ -1,5 +1,5 @@
-use std::process::{Command, Child};
-use std::time::Duration;
+use std::process::{Command, Child, Stdio};
+use std::time::{Duration, Instant};
 use std::ptr;
 
 use anyhow::{anyhow, Result};
@@ -7,7 +7,7 @@ use log::{info, debug, warn, error};
 
 // Mach types and constants
 use mach2::mach_types::{task_t, thread_act_t};
-use mach2::kern_return::KERN_SUCCESS;
+use mach2::kern_return::{KERN_SUCCESS, kern_return_t};
 use mach2::vm_prot::{VM_PROT_READ, VM_PROT_WRITE, VM_PROT_EXECUTE};
 use mach2::vm_types::{mach_vm_address_t, mach_vm_size_t};
 use mach2::port::{mach_port_t, MACH_PORT_NULL};
@@ -16,6 +16,7 @@ use mach2::task::{task_resume, task_suspend, task_threads};
 use mach2::traps::task_for_pid;
 use mach2::thread_act::thread_suspend;
 use mach2::vm::{mach_vm_read_overwrite, mach_vm_write, mach_vm_protect, mach_vm_deallocate};
+use mach2::task_info::{task_info_t, TASK_BASIC_INFO};
 
 // Libc for waitpid, ptrace
 use libc::{pid_t, waitpid, WIFSTOPPED, WSTOPSIG};
@@ -25,6 +26,45 @@ use crate::debugger::registers::{Register, Registers};
 
 /// INT3 instruction (breakpoint)
 const BREAKPOINT_OPCODE: u8 = 0xCC;
+
+// Mach Thread State Definitions for ARM64
+// These are typically defined in /usr/include/mach/arm/thread_status.h
+
+// ARM thread state flavor
+pub const ARM_THREAD_STATE64: i32 = 6;
+pub const ARM_THREAD_STATE64_COUNT: u32 = 68; // Size in 32-bit words (68 = 17 64-bit registers / 2)
+
+// ARM thread state structure
+#[repr(C)]
+pub struct arm_thread_state64_t {
+    pub __x: [u64; 29],    // x0-x28
+    pub __fp: u64,         // Frame pointer x29
+    pub __lr: u64,         // Link register x30
+    pub __sp: u64,         // Stack pointer
+    pub __pc: u64,         // Program counter
+    pub __cpsr: u64,       // Current program status register (u64 to match Register type)
+}
+
+// Function prototype for thread_get_state
+extern "C" {
+    pub fn thread_get_state(
+        thread: thread_act_t,
+        flavor: i32,
+        state: *mut i32,
+        count: *mut u32,
+    ) -> kern_return_t;
+    
+    pub fn thread_set_state(
+        thread: thread_act_t,
+        flavor: i32,
+        state: *const i32,
+        count: u32,
+    ) -> kern_return_t;
+}
+
+// ARM NEON (SIMD) state flavor and structure (for future use)
+pub const ARM_NEON_STATE64: i32 = 17;
+pub const ARM_NEON_STATE64_COUNT: u32 = 66; // 33 128-bit registers (q0-q31) + fpsr/fpcr
 
 /// MacOS-specific debugger implementation
 pub struct MacosDebugger {
@@ -208,7 +248,7 @@ impl MacosDebugger {
         Ok(())
     }
     
-    /// Get the current registers for the specified thread
+    /// Get the register values for the specified thread
     pub fn get_registers(&self, pid: i32) -> Result<Registers> {
         if self.task_port.is_none() {
             return Err(anyhow!("Not attached to any process"));
@@ -216,24 +256,55 @@ impl MacosDebugger {
         
         info!("Getting registers for process {}", pid);
         
-        // Create an empty register set
         let mut registers = Registers::new();
         
         // Use current thread if available, otherwise first thread
         let thread = self.get_current_thread()?;
         
-        // In a real implementation, we would:
-        // 1. Use thread_get_state with ARM_THREAD_STATE64 to get general registers
-        // 2. Use thread_get_state with ARM_NEON_STATE64 to get SIMD registers
-        
-        // For our implementation, we'll just set some dummy values
-        if thread != 0 {
-            registers.set(Register::PC, 0x100000f24);
-            registers.set(Register::SP, 0x7ff7bfeff648);
-            registers.set(Register::X0, 0x0000000000000000);
-            registers.set(Register::X1, 0x00007ff7bfeff680);
-            registers.set(Register::X2, 0x00007ff7bfeff698);
+        if thread == 0 {
+            return Err(anyhow!("No threads available"));
         }
+        
+        // Get ARM64 thread state
+        let mut arm_thread_state: arm_thread_state64_t = unsafe { std::mem::zeroed() };
+        let mut count = ARM_THREAD_STATE64_COUNT;
+        
+        let kr = unsafe {
+            thread_get_state(
+                thread,
+                ARM_THREAD_STATE64,
+                &mut arm_thread_state as *mut _ as *mut ::std::os::raw::c_int,
+                &mut count
+            )
+        };
+        
+        if kr != KERN_SUCCESS {
+            return Err(anyhow!("Failed to get thread state: {}", kr));
+        }
+        
+        debug!("Got thread state for thread {:#x}", thread);
+        
+        // Extract general purpose registers from thread state
+        // arm_thread_state64_t contains __x[29] (GP regs), __fp, __lr, __sp, __pc, and __cpsr
+        for i in 0..29 {
+            if let Some(reg) = Register::from_arm64_index(i) {
+                registers.set(reg, unsafe { arm_thread_state.__x[i] });
+            }
+        }
+        
+        // Extract special registers
+        registers.set(Register::X29, unsafe { arm_thread_state.__fp });
+        registers.set(Register::X30, unsafe { arm_thread_state.__lr });
+        registers.set(Register::SP, unsafe { arm_thread_state.__sp });
+        registers.set(Register::PC, unsafe { arm_thread_state.__pc });
+        registers.set(Register::CPSR, unsafe { arm_thread_state.__cpsr });
+        
+        // Get NEON/FP registers if needed (disabled for now as it's more complex)
+        // Getting NEON registers requires ARM_NEON_STATE64 in a separate call
+        
+        debug!("Registers: PC={}, SP={}", 
+            registers.format_value(Register::PC),
+            registers.format_value(Register::SP));
         
         Ok(registers)
     }
@@ -249,18 +320,74 @@ impl MacosDebugger {
         // Use current thread if available, otherwise first thread
         let thread = self.get_current_thread()?;
         
-        // In a real implementation, we would:
-        // 1. Use thread_set_state with ARM_THREAD_STATE64 to set general registers
-        // 2. Use thread_set_state with ARM_NEON_STATE64 to set SIMD registers
-        
         if thread == 0 {
             return Err(anyhow!("No threads available"));
         }
         
-        // Log what we would be setting
-        if let Some(pc) = registers.get(Register::PC) {
-            debug!("Would set PC: 0x{:x}", pc);
+        // Create and fill thread state structure
+        let mut arm_thread_state: arm_thread_state64_t = unsafe { std::mem::zeroed() };
+        
+        // First, get current state as baseline
+        let mut count = ARM_THREAD_STATE64_COUNT;
+        let kr = unsafe {
+            thread_get_state(
+                thread,
+                ARM_THREAD_STATE64,
+                &mut arm_thread_state as *mut _ as *mut ::std::os::raw::c_int,
+                &mut count
+            )
+        };
+        
+        if kr != KERN_SUCCESS {
+            return Err(anyhow!("Failed to get thread state: {}", kr));
         }
+        
+        // Now update it with our values
+        // Update general purpose registers
+        for i in 0..29 {
+            if let Some(reg) = Register::from_arm64_index(i) {
+                if let Some(value) = registers.get(reg) {
+                    unsafe { arm_thread_state.__x[i] = value; }
+                }
+            }
+        }
+        
+        // Update special registers
+        if let Some(value) = registers.get(Register::X29) {
+            arm_thread_state.__fp = value;
+        }
+        
+        if let Some(value) = registers.get(Register::X30) {
+            arm_thread_state.__lr = value;
+        }
+        
+        if let Some(value) = registers.get(Register::SP) {
+            arm_thread_state.__sp = value;
+        }
+        
+        if let Some(value) = registers.get(Register::PC) {
+            arm_thread_state.__pc = value;
+        }
+        
+        if let Some(value) = registers.get(Register::CPSR) {
+            arm_thread_state.__cpsr = value;
+        }
+        
+        // Now write the state back
+        let kr = unsafe {
+            thread_set_state(
+                thread,
+                ARM_THREAD_STATE64,
+                &arm_thread_state as *const _ as *const ::std::os::raw::c_int,
+                count
+            )
+        };
+        
+        if kr != KERN_SUCCESS {
+            return Err(anyhow!("Failed to set thread state: {}", kr));
+        }
+        
+        debug!("Successfully updated registers for thread {:#x}", thread);
         
         Ok(())
     }
