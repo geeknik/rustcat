@@ -88,6 +88,13 @@ pub enum Command {
     Registers,             // Show registers
     Backtrace,             // Show backtrace
     
+    // Trace commands
+    TraceOn,               // Enable function call tracing
+    TraceOff,              // Disable function call tracing
+    TraceClear,            // Clear function call trace
+    TraceFilter(String),   // Add a function filter for tracing
+    TraceClearFilters,     // Clear all function filters
+    
     // Control commands
     Help(Option<String>),  // Show help for command
     Set(String, String),   // Set variable
@@ -218,6 +225,7 @@ pub enum View {
     Stack,
     Threads,
     Command,
+    Trace,
 }
 
 impl App {
@@ -525,6 +533,26 @@ impl App {
                     },
                 }
             },
+            Command::TraceOn => {
+                debugger.enable_function_tracing();
+                info!("Function call tracing enabled");
+            },
+            Command::TraceOff => {
+                debugger.disable_function_tracing();
+                info!("Function call tracing disabled");
+            },
+            Command::TraceClear => {
+                debugger.clear_function_trace();
+                info!("Function call trace cleared");
+            },
+            Command::TraceFilter(pattern) => {
+                debugger.add_function_trace_filter(pattern.clone());
+                info!("Added function trace filter: {}", pattern);
+            },
+            Command::TraceClearFilters => {
+                debugger.clear_function_trace_filters();
+                info!("All function trace filters cleared");
+            },
             // Handle other commands
             _ => {
                 // Unhandled command
@@ -625,6 +653,17 @@ impl App {
                     Command::Unknown("source requires a filename".to_string())
                 }
             },
+            "traceon" => Command::TraceOn,
+            "traceoff" => Command::TraceOff,
+            "traceclear" => Command::TraceClear,
+            "tracefilter" => {
+                if parts.len() > 1 {
+                    Command::TraceFilter(parts[1].to_string())
+                } else {
+                    Command::Unknown("tracefilter requires a function name".to_string())
+                }
+            },
+            "traceclearfilters" => Command::TraceClearFilters,
             _ => Command::Unknown(cmd_str.to_string()),
         }
     }
@@ -830,7 +869,8 @@ impl App {
                             KeyCode::Char('3') => self.current_view = View::Registers,
                             KeyCode::Char('4') => self.current_view = View::Stack,
                             KeyCode::Char('5') => self.current_view = View::Threads,
-                            KeyCode::Char('6') => self.current_view = View::Command,
+                            KeyCode::Char('6') => self.current_view = View::Trace,
+                            KeyCode::Char('7') => self.current_view = View::Command,
                             
                             // Legacy view keys
                             KeyCode::Char('c') => self.current_view = View::Code,
@@ -839,6 +879,7 @@ impl App {
                             // 's' key is also used for stepping, so use a modifier key instead
                             KeyCode::Char('w') => self.current_view = View::Stack, // Using 'w' for 'Stack'
                             KeyCode::Char('t') => self.current_view = View::Threads,
+                            KeyCode::Char('f') => self.current_view = View::Trace, // Using 'f' for function tracer
                             
                             // Focus command input
                             KeyCode::Char(':') => {

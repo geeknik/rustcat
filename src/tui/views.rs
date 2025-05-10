@@ -2,8 +2,8 @@ use ratatui::{
     backend::Backend,
     layout::{Rect, Alignment, Layout, Constraint, Direction},
     style::{Color, Modifier, Style},
-    text::{Line, Span},
-    widgets::{Block, Borders, List, ListItem, Paragraph, Table, Row, Cell, Tabs, ListState},
+    text::{Line, Span, Spans},
+    widgets::{Block, Borders, List, ListItem, Paragraph, Table, Row, Cell, Tabs, ListState, Wrap},
     symbols,
     Frame,
 };
@@ -12,6 +12,8 @@ use crate::tui::app::{App, View};
 use crate::debugger::memory::MemoryFormat;
 use crate::debugger::threads::{ThreadState};
 use crate::debugger::registers::{RegisterGroup, Register};
+use crate::debugger::core::Debugger;
+use crate::debugger::disasm::Instruction;
 
 /// View for the code display
 pub struct CodeView;
@@ -191,7 +193,7 @@ pub fn draw_memory_view<B: Backend>(
 ) {
     let block = Block::default()
         .title(Span::styled(
-            format!("Memory - {}", app.get_memory_format().name()),
+            format!("Memory - {}", app.get_memory_format().as_str()),
             Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD),
         ))
         .borders(Borders::ALL)
@@ -651,4 +653,285 @@ pub fn draw_registers_view<B: Backend>(f: &mut Frame<B>, app: &App, area: Rect) 
         );
     
     f.render_stateful_widget(register_list, tabs_layout[1], &mut register_list_state);
+}
+
+/// A view that displays disassembled code
+pub struct DisassemblyView;
+
+impl DisassemblyView {
+    pub fn new() -> Self {
+        Self {}
+    }
+    
+    /// Render the disassembly view
+    pub fn render<B: Backend>(&self, f: &mut Frame<B>, area: Rect, debugger: &Debugger, current_address: Option<u64>, selected_index: Option<usize>) {
+        // Create a block for the view
+        let block = Block::default()
+            .title("Disassembly")
+            .borders(Borders::ALL)
+            .style(Style::default().fg(Color::White));
+        
+        let inner_area = block.inner(area);
+        f.render_widget(block, area);
+        
+        // Get the current PC
+        let pc = if let Ok(registers) = debugger.get_registers() {
+            registers.get(Register::PC)
+        } else {
+            None
+        };
+        
+        // Use provided address or current PC
+        let address = current_address.or(pc);
+        
+        if let Some(addr) = address {
+            // How many instructions to display (based on height)
+            let count = inner_area.height as usize;
+            
+            // Try to put the current instruction in the middle
+            let context_before = count / 2;
+            let context_after = count - context_before - 1;
+            
+            // Get disassembly with context
+            if let Ok(instructions) = debugger.get_disassembly_context(addr, context_before, context_after) {
+                // Find the index of the current instruction
+                let current_idx = instructions.iter().position(|ins| ins.address == addr).unwrap_or(0);
+                
+                // Convert instructions to ListItems
+                let items: Vec<ListItem> = instructions.iter().enumerate().map(|(idx, ins)| {
+                    // Check if this is the current instruction or selected
+                    let is_current = ins.address == addr;
+                    let is_selected = selected_index.map_or(false, |selected| selected == idx);
+                    
+                    // Style based on whether it's current or selected
+                    let style = if is_current && is_selected {
+                        Style::default().fg(Color::Black).bg(Color::Yellow)
+                    } else if is_current {
+                        Style::default().fg(Color::Yellow)
+                    } else if is_selected {
+                        Style::default().fg(Color::Blue)
+                    } else {
+                        Style::default().fg(Color::Gray)
+                    };
+                    
+                    // Format the instruction line
+                    let line = format!(
+                        "{:#016x}: {:12} {}", 
+                        ins.address, 
+                        ins.hex_bytes(), 
+                        ins.text
+                    );
+                    
+                    ListItem::new(vec![Spans::from(vec![Span::styled(
+                        line,
+                        style,
+                    )])])
+                }).collect();
+                
+                // Create and render the list
+                let list = List::new(items)
+                    .highlight_symbol(">> ")
+                    .style(Style::default().fg(Color::White));
+                
+                f.render_widget(list, inner_area);
+            } else {
+                // Show error message if disassembly fails
+                let message = Paragraph::new("Could not disassemble at this address")
+                    .style(Style::default().fg(Color::Red))
+                    .wrap(Wrap { trim: true });
+                f.render_widget(message, inner_area);
+            }
+        } else {
+            // Show message when no address is available
+            let message = Paragraph::new("No code address available. Run the program first.")
+                .style(Style::default().fg(Color::Yellow))
+                .wrap(Wrap { trim: true });
+            f.render_widget(message, inner_area);
+        }
+    }
+}
+
+/// View for the trace display (function call tracing)
+pub struct TraceView;
+
+impl TraceView {
+    pub fn new() -> Self {
+        Self
+    }
+    
+    pub fn render<B: Backend>(&self, f: &mut Frame<B>, area: Rect, app: &App) {
+        let block = Block::default()
+            .title(Span::styled(
+                "Function Call Trace",
+                Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD),
+            ))
+            .borders(Borders::ALL)
+            .border_style(Style::default().fg(if app.current_view == View::Trace {
+                Color::Green
+            } else {
+                Color::Gray
+            }));
+        
+        let inner_area = block.inner(area);
+        f.render_widget(block, area);
+        
+        // Get the debugger and thread manager
+        let debugger = app.get_debugger();
+        
+        if let Ok(debugger) = debugger.lock() {
+            if let Some(thread_manager) = debugger.get_thread_manager() {
+                // Get current thread ID
+                if let Some(current_thread_id) = thread_manager.current_thread_id() {
+                    // Render the call tree for the current thread
+                    let call_tree = debugger.get_function_call_tree(current_thread_id);
+                    
+                    if !call_tree.is_empty() {
+                        // Create items for the call tree
+                        let items: Vec<ListItem> = call_tree.iter()
+                            .map(|call| {
+                                // Check if this is an active call (no return time)
+                                let style = if call.contains("(active)") {
+                                    Style::default().fg(Color::Yellow)
+                                } else {
+                                    Style::default()
+                                };
+                                
+                                ListItem::new(call.clone()).style(style)
+                            })
+                            .collect();
+                        
+                        let list = List::new(items)
+                            .block(Block::default())
+                            .highlight_style(Style::default().add_modifier(Modifier::BOLD));
+                        
+                        f.render_widget(list, inner_area);
+                        return;
+                    }
+                }
+                
+                // No call tree for the current thread
+                let text = if debugger.is_function_tracing_enabled() {
+                    "Function call tracing is enabled, but no calls have been recorded yet."
+                } else {
+                    "Function call tracing is disabled. Enable it with the 'trace on' command."
+                };
+                
+                let paragraph = Paragraph::new(text)
+                    .alignment(Alignment::Center)
+                    .style(Style::default().fg(Color::Gray));
+                
+                f.render_widget(paragraph, inner_area);
+            } else {
+                // No thread manager
+                let text = if debugger.get_state() != crate::debugger::core::DebuggerState::Running {
+                    "No program is running."
+                } else {
+                    "No thread information available."
+                };
+                
+                let paragraph = Paragraph::new(text)
+                    .alignment(Alignment::Center)
+                    .style(Style::default().fg(Color::Gray));
+                
+                f.render_widget(paragraph, inner_area);
+            }
+        } else {
+            // Failed to lock debugger
+            let paragraph = Paragraph::new("Failed to access debugger.")
+                .alignment(Alignment::Center)
+                .style(Style::default().fg(Color::Red));
+            
+            f.render_widget(paragraph, inner_area);
+        }
+    }
+}
+
+/// Draw function call trace view with statistics
+pub fn draw_trace_view<B: Backend>(
+    f: &mut Frame<B>,
+    app: &App,
+    area: Rect,
+) {
+    // Create a layout that splits the area into two sections:
+    // 1. Call tree (top, larger)
+    // 2. Statistics (bottom)
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Percentage(80), // Call tree takes 80% of space
+            Constraint::Percentage(20), // Statistics takes 20% of space
+        ])
+        .split(area);
+    
+    // Create the main trace view block
+    let trace_view = TraceView::new();
+    trace_view.render(f, chunks[0], app);
+    
+    // Draw statistics in the bottom section
+    let block = Block::default()
+        .title(Span::styled(
+            "Call Statistics",
+            Style::default().fg(Color::Cyan),
+        ))
+        .borders(Borders::ALL);
+    
+    let inner_stats_area = block.inner(chunks[1]);
+    f.render_widget(block, chunks[1]);
+    
+    // Get the debugger to access statistics
+    let debugger = app.get_debugger();
+    
+    if let Ok(debugger) = debugger.lock() {
+        // Get trace statistics
+        let stats = debugger.get_function_call_stats();
+        
+        if !stats.is_empty() {
+            // Sort by total time spent
+            let mut stats_vec: Vec<_> = stats.into_iter().collect();
+            stats_vec.sort_by(|a, b| b.1.1.cmp(&a.1.1));
+            
+            // Create a table of statistics
+            let header = Row::new(vec![
+                "Function", "Calls", "Total Time", "Avg Time"
+            ].into_iter().map(|h| Cell::from(h).style(Style::default().fg(Color::Yellow))))
+            .style(Style::default().fg(Color::Yellow));
+            
+            // Create rows
+            let rows = stats_vec.iter().take(inner_stats_area.height as usize).map(|(name, (count, duration))| {
+                let avg_time = duration.div_f64(*count as f64);
+                Row::new(vec![
+                    name.clone(),
+                    format!("{}", count),
+                    format!("{:.2}ms", duration.as_millis()),
+                    format!("{:.2}ms", avg_time.as_millis()),
+                ])
+            });
+            
+            let table = Table::new(rows)
+                .header(header)
+                .block(Block::default())
+                .widths(&[
+                    Constraint::Percentage(40), // Function name
+                    Constraint::Percentage(15), // Call count
+                    Constraint::Percentage(25), // Total time
+                    Constraint::Percentage(20), // Avg time
+                ]);
+            
+            f.render_widget(table, inner_stats_area);
+        } else {
+            // No statistics available
+            let paragraph = Paragraph::new("No function call statistics available.")
+                .alignment(Alignment::Center)
+                .style(Style::default().fg(Color::Gray));
+            
+            f.render_widget(paragraph, inner_stats_area);
+        }
+    } else {
+        // Failed to lock debugger
+        let paragraph = Paragraph::new("Failed to access debugger.")
+            .alignment(Alignment::Center)
+            .style(Style::default().fg(Color::Red));
+        
+        f.render_widget(paragraph, inner_stats_area);
+    }
 }

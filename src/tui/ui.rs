@@ -11,7 +11,7 @@ use ratatui::{
 use std::sync::mpsc;
 
 use crate::tui::app::{App, View, ActiveBlock, LogFilter};
-use crate::tui::views::{CodeView, CommandView, draw_memory_view, draw_thread_view, draw_call_stack_view, draw_registers_view};
+use crate::tui::views::{CodeView, CommandView, draw_memory_view, draw_thread_view, draw_call_stack_view, draw_registers_view, draw_trace_view};
 use crate::debugger::memory::MemoryFormat;
 
 /// Set up log capturing for UI display
@@ -118,7 +118,14 @@ fn draw_title_bar<B: Backend>(f: &mut Frame<B>, app: &mut App, area: Rect) {
                 Style::default()
             }
         ),
-        Span::styled("[6] Command", 
+        Span::styled("[6] Trace", 
+            if matches!(app.current_view, View::Trace) { 
+                Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)
+            } else { 
+                Style::default()
+            }
+        ),
+        Span::styled("[7] Command", 
             if matches!(app.current_view, View::Command) { 
                 Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)
             } else { 
@@ -143,7 +150,8 @@ fn draw_title_bar<B: Backend>(f: &mut Frame<B>, app: &mut App, area: Rect) {
             View::Registers => 2,
             View::Stack => 3,
             View::Threads => 4,
-            View::Command => 5,
+            View::Trace => 5,
+            View::Command => 6,
         });
     
     f.render_widget(tabs, area);
@@ -179,7 +187,7 @@ fn draw_main_area<B: Backend>(f: &mut Frame<B>, app: &mut App, area: Rect) {
                     "Hex", "ASCII", "UTF8", "U8", "U16", "U32", "U64", "F32", "F64"
                 ];
                 
-                let _current_format = app.get_memory_format().name();
+                let _current_format = app.get_memory_format().as_str();
                 let format_text = format!("Format: [{}]", format_names.join("] ["));
                 
                 let paragraph = Paragraph::new(format_text)
@@ -203,6 +211,10 @@ fn draw_main_area<B: Backend>(f: &mut Frame<B>, app: &mut App, area: Rect) {
         View::Stack => {
             // Use our enhanced call stack view
             draw_call_stack_view(f, app, area);
+        },
+        View::Trace => {
+            // Use our function call trace view
+            draw_trace_view(f, app, area);
         },
         View::Command => {
             let command_view = CommandView::new();

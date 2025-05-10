@@ -1,6 +1,8 @@
 use std::path::Path;
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
+use std::collections::HashMap;
+use std::time::Duration;
 
 use anyhow::{anyhow, Result};
 use log::{info, warn, debug, error};
@@ -10,6 +12,8 @@ use crate::debugger::memory::{MemoryMap, MemoryFormat};
 use crate::debugger::registers::{Registers, Register};
 use crate::debugger::symbols::SymbolTable;
 use crate::debugger::threads::{ThreadManager, ThreadState, StackFrame};
+use crate::debugger::disasm::{Disassembler, Instruction};
+use crate::debugger::tracer::FunctionTracer;
 use crate::platform::macos::MacosDebugger;
 use crate::platform::dwarf::DwarfParser;
 
@@ -54,6 +58,10 @@ pub struct Debugger {
     start_time: Instant,
     /// Current breakpoint address (if stopped at one)
     current_breakpoint: Option<u64>,
+    /// Disassembler for instruction decoding
+    disassembler: Disassembler,
+    /// Function tracer
+    tracer: FunctionTracer,
 }
 
 impl Debugger {
@@ -70,6 +78,10 @@ impl Debugger {
         
         info!("Initialized debugger for target: {}", target_path);
         
+        // Create tracer
+        let mut tracer = FunctionTracer::new();
+        tracer.set_symbol_resolver(Arc::clone(&symbols));
+        
         Ok(Self {
             target_path: target_path.to_string(),
             args: Vec::new(),
@@ -83,6 +95,8 @@ impl Debugger {
             dwarf_parser: DwarfParser::new(),
             start_time: Instant::now(),
             current_breakpoint: None,
+            disassembler: Disassembler::new(),
+            tracer,
         })
     }
     
@@ -453,6 +467,13 @@ impl Debugger {
             // execute the instruction, then restore the breakpoint
             let bp_addr = self.current_breakpoint.take();
             
+            // Get current instruction for analysis
+            let current_instruction = if let Ok(current_pc) = self.get_registers().map(|r| r.get(Register::PC).unwrap_or(0)) {
+                self.disassemble(current_pc, 1).ok().and_then(|ins| ins.first().cloned())
+            } else {
+                None
+            };
+            
             if let Some(addr) = bp_addr {
                 // Temporarily remove the breakpoint
                 let bp = self.find_breakpoint(addr).ok_or_else(|| anyhow!("Breakpoint not found"))?;
@@ -472,6 +493,45 @@ impl Debugger {
             // Wait for the process to stop
             if let Err(e) = self.platform.wait_for_stop(pid, 1000) {
                 warn!("Error waiting for process to stop after step: {}", e);
+            }
+            
+            // Record function call or return if appropriate
+            if let Some(instruction) = current_instruction {
+                // Get the current thread ID
+                let thread_id = pid as u64; // For now, assume thread ID = process ID
+                
+                // If this was a call instruction, record the function call
+                if instruction.is_call {
+                    let call_site = instruction.address;
+                    // Calculate target address - direct or indirect
+                    let target_addr = instruction.branch_target.unwrap_or_else(|| {
+                        // For indirect calls, we need to look at the current PC
+                        if let Ok(registers) = self.get_registers() {
+                            registers.get(Register::PC).unwrap_or(0)
+                        } else {
+                            0
+                        }
+                    });
+                    
+                    // Record the call
+                    if let Err(e) = self.record_function_call(call_site, target_addr, thread_id) {
+                        debug!("Could not record function call: {}", e);
+                    }
+                }
+                // If this was a return instruction, record the return
+                else if instruction.is_return {
+                    // Get return value from X0 register (ARM64 convention)
+                    let return_value = if let Ok(registers) = self.get_registers() {
+                        registers.get(Register::X0)
+                    } else {
+                        None
+                    };
+                    
+                    // Record the return
+                    if let Err(e) = self.record_function_return(thread_id, return_value) {
+                        debug!("Could not record function return: {}", e);
+                    }
+                }
             }
             
             self.state = DebuggerState::Stopped;
@@ -502,6 +562,34 @@ impl Debugger {
                 // Wait for the step to complete
                 if let Err(e) = self.platform.wait_for_stop(pid, 1000) {
                     warn!("Error waiting for process to stop after step: {}", e);
+                }
+                
+                // Check if the step caused a function call or return
+                if let Ok(registers) = self.get_registers() {
+                    let current_pc = registers.get(Register::PC).unwrap_or(0);
+                    // Disassemble the instruction we just executed
+                    if let Ok(instructions) = self.disassemble(addr, 1) {
+                        if let Some(instruction) = instructions.first() {
+                            let thread_id = pid as u64;
+                            
+                            // Check if it was a call instruction
+                            if instruction.is_call {
+                                let call_site = instruction.address;
+                                if let Some(target) = instruction.branch_target {
+                                    if let Err(e) = self.record_function_call(call_site, target, thread_id) {
+                                        debug!("Could not record function call: {}", e);
+                                    }
+                                }
+                            }
+                            // Check if it was a return instruction
+                            else if instruction.is_return {
+                                let return_value = registers.get(Register::X0);
+                                if let Err(e) = self.record_function_return(thread_id, return_value) {
+                                    debug!("Could not record function return: {}", e);
+                                }
+                            }
+                        }
+                    }
                 }
                 
                 // Restore the breakpoint
@@ -833,6 +921,118 @@ impl Debugger {
         } else {
             Err(anyhow!("No process is being debugged"))
         }
+    }
+
+    /// Disassemble instructions at a specific address
+    pub fn disassemble(&self, address: u64, count: usize) -> Result<Vec<Instruction>> {
+        if let Some(pid) = self.pid {
+            // Disassemble using our disassembler
+            let mut instructions = self.disassembler.disassemble(address, count)?;
+            
+            // Check if any of these addresses have breakpoints
+            let result = instructions.into_iter().map(|mut ins| {
+                // Mark instructions that have breakpoints
+                if self.find_breakpoint(ins.address).is_some() {
+                    // This is a simple way to mark it in the display text
+                    ins.text = format!("* {}", ins.text);
+                }
+                ins
+            }).collect();
+            
+            Ok(result)
+        } else {
+            Err(anyhow!("Cannot disassemble: program not loaded"))
+        }
+    }
+    
+    /// Disassemble at current position
+    pub fn disassemble_current(&self, count: usize) -> Result<Vec<Instruction>> {
+        // Get the current PC value from registers
+        if let Ok(registers) = self.get_registers() {
+            if let Some(pc) = registers.get(Register::PC) {
+                // Disassemble at the current PC
+                self.disassemble(pc, count)
+            } else {
+                Err(anyhow!("Cannot determine current PC value"))
+            }
+        } else {
+            Err(anyhow!("Cannot get registers to determine PC"))
+        }
+    }
+    
+    /// Get disassembly context for a specific address
+    /// Returns instructions before and after the address
+    pub fn get_disassembly_context(&self, address: u64, 
+                                   context_before: usize, 
+                                   context_after: usize) -> Result<Vec<Instruction>> {
+        // For simplicity, we'll disassemble from an earlier point to get the context
+        // This is approximate since instruction lengths can vary, but for ARM64 they're fixed at 4 bytes
+        let start_address = address.saturating_sub((context_before * 4) as u64);
+        let total_count = context_before + 1 + context_after;
+        
+        self.disassemble(start_address, total_count)
+    }
+
+    // Function tracer methods
+
+    /// Enable function call tracing
+    pub fn enable_function_tracing(&mut self) {
+        self.tracer.enable();
+    }
+
+    /// Disable function call tracing
+    pub fn disable_function_tracing(&mut self) {
+        self.tracer.disable();
+    }
+
+    /// Clear function call trace
+    pub fn clear_function_trace(&mut self) {
+        self.tracer.clear();
+    }
+
+    /// Add a function filter for tracing
+    pub fn add_function_trace_filter(&mut self, pattern: String) {
+        self.tracer.add_function_filter(pattern);
+    }
+
+    /// Clear all function trace filters
+    pub fn clear_function_trace_filters(&mut self) {
+        self.tracer.clear_function_filters();
+    }
+
+    /// Set maximum number of function calls to trace
+    pub fn set_max_traced_calls(&mut self, max_calls: usize) {
+        self.tracer.set_max_calls(max_calls);
+    }
+
+    /// Record a function call
+    pub fn record_function_call(&mut self, call_site: u64, function_address: u64, thread_id: u64) -> Result<usize> {
+        self.tracer.record_call(call_site, function_address, thread_id)
+    }
+
+    /// Record a function return
+    pub fn record_function_return(&mut self, thread_id: u64, return_value: Option<u64>) -> Result<()> {
+        self.tracer.record_return(thread_id, return_value)
+    }
+
+    /// Check if function tracing is enabled
+    pub fn is_function_tracing_enabled(&self) -> bool {
+        self.tracer.is_enabled()
+    }
+
+    /// Get all traced function calls
+    pub fn get_traced_calls(&self) -> &[crate::debugger::tracer::FunctionCall] {
+        self.tracer.get_calls()
+    }
+
+    /// Get the call tree for a specific thread
+    pub fn get_function_call_tree(&self, thread_id: u64) -> Vec<String> {
+        self.tracer.format_call_tree(thread_id)
+    }
+
+    /// Get function call statistics
+    pub fn get_function_call_stats(&self) -> HashMap<String, (usize, Duration)> {
+        self.tracer.get_statistics()
     }
 }
 

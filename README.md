@@ -83,6 +83,7 @@ cargo run -- /path/to/program
 - `r`: Switch to registers view
 - `w`: Switch to stack view (call stack)
 - `t`: Switch to threads view
+- `f`: Switch to function trace view
 - `:`: Switch to command mode
 - `Tab`: Switch between UI panels
 
@@ -95,6 +96,11 @@ Enter command mode with `:` and type commands like:
 - `step` - Step into
 - `next` - Step over
 - `memory 0x1000 100` - View 100 bytes of memory at address 0x1000
+- `traceon` - Enable function call tracing
+- `traceoff` - Disable function call tracing
+- `traceclear` - Clear function call trace
+- `tracefilter main` - Only trace functions containing "main"
+- `traceclearfilters` - Clear all trace filters
 - `help` - Show help
 
 ## 🧬 Philosophy
@@ -133,8 +139,8 @@ No more syscalls in the dark. Let's light this up.
   - [x] Function info
   - [x] Source code viewing
 - [x] Full ARM64 register support
-- [ ] Disassembly view
-- [ ] Function call tracing
+- [x] Disassembly view
+- [x] Function call tracing
 - [ ] Variable inspection
 - [ ] Expression evaluation
 - [ ] Watchpoints

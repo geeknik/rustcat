@@ -242,7 +242,7 @@ impl MemoryMap {
             MemoryFormat::Hex => self.format_as_hex(data),
             MemoryFormat::Ascii => self.format_as_ascii(data),
             MemoryFormat::Utf8 => self.format_as_utf8(data),
-            MemoryFormat::Disassembly => "Disassembly not implemented yet".to_string(),
+            MemoryFormat::Disassembly => "Disassembly view in separate tab".to_string(),
             MemoryFormat::U8 => self.format_as_u8(data),
             MemoryFormat::U16 => self.format_as_u16(data),
             MemoryFormat::U32 => self.format_as_u32(data),
@@ -433,22 +433,36 @@ impl MemoryMap {
     }
 }
 
-/// Different ways to view memory data
+/// Memory format for display
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MemoryFormat {
+    /// Hexadecimal bytes
     Hex,
+    /// ASCII representation
     Ascii,
+    /// UTF-8 representation
     Utf8,
+    /// Disassembled instructions
     Disassembly,
+    /// Unsigned 8-bit integers
     U8,
+    /// Unsigned 16-bit integers
     U16,
+    /// Unsigned 32-bit integers
     U32,
+    /// Unsigned 64-bit integers
     U64,
+    /// Signed 8-bit integers
     I8,
+    /// Signed 16-bit integers
     I16,
+    /// Signed 32-bit integers
     I32,
+    /// Signed 64-bit integers
     I64,
+    /// 32-bit floating point
     F32,
+    /// 64-bit floating point
     F64,
 }
 
@@ -472,24 +486,24 @@ impl MemoryFormat {
             MemoryFormat::F64,
         ]
     }
-
-    /// Get a human-readable name for this format
-    pub fn name(&self) -> &'static str {
+    
+    /// Convert to string representation
+    pub fn as_str(&self) -> &'static str {
         match self {
-            MemoryFormat::Hex => "Hexadecimal",
+            MemoryFormat::Hex => "Hex",
             MemoryFormat::Ascii => "ASCII",
             MemoryFormat::Utf8 => "UTF-8",
             MemoryFormat::Disassembly => "Disassembly",
-            MemoryFormat::U8 => "Unsigned 8-bit",
-            MemoryFormat::U16 => "Unsigned 16-bit",
-            MemoryFormat::U32 => "Unsigned 32-bit",
-            MemoryFormat::U64 => "Unsigned 64-bit",
-            MemoryFormat::I8 => "Signed 8-bit",
-            MemoryFormat::I16 => "Signed 16-bit",
-            MemoryFormat::I32 => "Signed 32-bit",
-            MemoryFormat::I64 => "Signed 64-bit",
-            MemoryFormat::F32 => "Float 32-bit",
-            MemoryFormat::F64 => "Float 64-bit",
+            MemoryFormat::U8 => "u8",
+            MemoryFormat::U16 => "u16",
+            MemoryFormat::U32 => "u32",
+            MemoryFormat::U64 => "u64",
+            MemoryFormat::I8 => "i8",
+            MemoryFormat::I16 => "i16",
+            MemoryFormat::I32 => "i32",
+            MemoryFormat::I64 => "i64",
+            MemoryFormat::F32 => "f32",
+            MemoryFormat::F64 => "f64",
         }
     }
 }
