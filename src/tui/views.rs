@@ -783,7 +783,7 @@ impl DisassemblyView {
     }
     
     /// Render the disassembly view
-    pub fn render<B: Backend>(&self, f: &mut Frame<B>, area: Rect, debugger: &Debugger, current_address: Option<u64>, selected_index: Option<usize>) {
+    pub fn render<B: Backend>(&self, f: &mut Frame<B>, area: Rect, debugger: &Debugger, _current_address: Option<u64>, selected_index: Option<usize>) {
         // Create a block for the view
         let block = Block::default()
             .title("Disassembly")
@@ -794,7 +794,7 @@ impl DisassemblyView {
         f.render_widget(block, area);
         
         // Get current program counter
-        if let Some(registers) = debugger.get_registers().ok() {
+        if let Ok(registers) = debugger.get_registers() {
             if let Some(pc) = registers.get(Register::Pc) {
                 // How many instructions to display (based on height)
                 let count = inner_area.height as usize;
