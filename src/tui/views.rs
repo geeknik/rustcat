@@ -17,6 +17,12 @@ use crate::debugger::core::Debugger;
 /// View for the code display
 pub struct CodeView;
 
+impl Default for CodeView {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl CodeView {
     pub fn new() -> Self {
         Self
@@ -41,6 +47,12 @@ impl CodeView {
 /// View for memory display
 pub struct MemoryView;
 
+impl Default for MemoryView {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl MemoryView {
     pub fn new() -> Self {
         Self
@@ -64,6 +76,12 @@ impl MemoryView {
 
 /// View for registers
 pub struct RegistersView;
+
+impl Default for RegistersView {
+    fn default() -> Self {
+        Self::new()
+    }
+}
 
 impl RegistersView {
     pub fn new() -> Self {
@@ -102,6 +120,12 @@ impl RegistersView {
 /// View for the stack trace
 pub struct StackView;
 
+impl Default for StackView {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl StackView {
     pub fn new() -> Self {
         Self
@@ -130,6 +154,12 @@ impl StackView {
 
 /// View for threads
 pub struct ThreadsView;
+
+impl Default for ThreadsView {
+    fn default() -> Self {
+        Self::new()
+    }
+}
 
 impl ThreadsView {
     pub fn new() -> Self {
@@ -160,6 +190,12 @@ impl ThreadsView {
 
 /// View for command input
 pub struct CommandView;
+
+impl Default for CommandView {
+    fn default() -> Self {
+        Self::new()
+    }
+}
 
 impl CommandView {
     pub fn new() -> Self {
@@ -324,7 +360,7 @@ pub fn draw_memory_view<B: Backend>(
             
             // Generate address column
             let address_text = format!("{:016x}", row_address);
-            let address_span = Line::from(vec![Span::styled(
+            let _address_span = Line::from(vec![Span::styled(
                 address_text,
                 Style::default().fg(Color::Yellow),
             )]);
@@ -340,7 +376,7 @@ pub fn draw_memory_view<B: Backend>(
                 hex_text.push_str(&format!("{:02x} ", byte));
                 
                 // Add ASCII representation (only printable characters)
-                if byte >= 32 && byte <= 126 {
+                if (32..=126).contains(&byte) {
                     ascii_text.push(byte as char);
                 } else {
                     ascii_text.push('.');
@@ -356,12 +392,12 @@ pub fn draw_memory_view<B: Backend>(
             }
             
             // Create spans for the row
-            let hex_span = Line::from(vec![Span::styled(
+            let _hex_span = Line::from(vec![Span::styled(
                 hex_text.clone(),
                 Style::default().fg(Color::White),
             )]);
             
-            let ascii_span = Line::from(vec![Span::styled(
+            let _ascii_span = Line::from(vec![Span::styled(
                 ascii_text.clone(),
                 Style::default().fg(Color::Cyan),
             )]);
@@ -730,6 +766,12 @@ pub fn draw_registers_view<B: Backend>(f: &mut Frame<B>, app: &App, area: Rect) 
 /// A view that displays disassembled code
 pub struct DisassemblyView;
 
+impl Default for DisassemblyView {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl DisassemblyView {
     pub fn new() -> Self {
         Self {}
@@ -825,6 +867,12 @@ impl DisassemblyView {
 
 /// View for the trace display (function call tracing)
 pub struct TraceView;
+
+impl Default for TraceView {
+    fn default() -> Self {
+        Self::new()
+    }
+}
 
 impl TraceView {
     pub fn new() -> Self {
@@ -1010,6 +1058,12 @@ pub fn draw_trace_view<B: Backend>(
 
 /// View for the variables display
 pub struct VariablesView;
+
+impl Default for VariablesView {
+    fn default() -> Self {
+        Self::new()
+    }
+}
 
 impl VariablesView {
     pub fn new() -> Self {

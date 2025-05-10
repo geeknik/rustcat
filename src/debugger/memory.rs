@@ -6,6 +6,16 @@ use std::io::{Result, Error, ErrorKind};
 use log::{info};
 use byteorder::{ByteOrder, LittleEndian};
 
+// MacOS specific imports for memory region mapping
+use mach2::kern_return::KERN_SUCCESS;
+use mach2::vm_types::{mach_vm_address_t, mach_vm_size_t};
+use mach2::vm_region::{vm_region_basic_info_data_64_t, VM_REGION_BASIC_INFO_64};
+use mach2::vm_prot::{VM_PROT_READ, VM_PROT_WRITE, VM_PROT_EXECUTE};
+use mach2::message::mach_msg_type_number_t;
+use mach2::port::mach_port_t;
+use mach2::traps::{mach_task_self, task_for_pid};
+use mach2::vm::mach_vm_region;
+
 /// Memory protection flags
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Protection {
@@ -172,9 +182,89 @@ impl MemoryMap {
     }
 
     /// Update memory regions from the process
-    pub fn update_from_process(&mut self, _pid: i32) -> Result<()> {
-        // This will be implemented using platform-specific code
-        // For macOS, we'll use task_for_pid and mach_vm_region_recurse
+    pub fn update_from_process(&mut self, pid: i32) -> Result<()> {
+        // Clear existing regions
+        self.regions.clear();
+        
+        // Get the task port for the target process
+        let mut task: mach_port_t = 0;
+        unsafe {
+            let kr = task_for_pid(mach_task_self(), pid, &mut task);
+            if kr != KERN_SUCCESS {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::PermissionDenied,
+                    format!("Failed to get task for pid {}: error {}", pid, kr)
+                ));
+            }
+        }
+        
+        // Start iterating through the address space
+        let mut address: mach_vm_address_t = 0;
+        
+        loop {
+            let mut size: mach_vm_size_t = 0;
+            let mut info: vm_region_basic_info_data_64_t = unsafe { std::mem::zeroed() };
+            let mut count: mach_msg_type_number_t = vm_region_basic_info_data_64_t::count();
+            let mut object_name: mach_port_t = 0;
+            
+            // Get information about the memory region at 'address'
+            let kr = unsafe {
+                mach_vm_region(
+                    task,
+                    &mut address,
+                    &mut size,
+                    VM_REGION_BASIC_INFO_64,
+                    (&mut info as *mut _) as *mut _,
+                    &mut count,
+                    &mut object_name
+                )
+            };
+            
+            // If we're done scanning or hit an error, break
+            if kr != KERN_SUCCESS {
+                break;
+            }
+            
+            // Determine protection flags
+            let protection = match (info.protection & VM_PROT_READ != 0, 
+                                   info.protection & VM_PROT_WRITE != 0, 
+                                   info.protection & VM_PROT_EXECUTE != 0) {
+                (true, false, false) => Protection::Read,
+                (false, true, false) => Protection::Write,
+                (false, false, true) => Protection::Execute,
+                (true, true, false) => Protection::ReadWrite,
+                (true, false, true) => Protection::ReadExecute,
+                (false, true, true) => Protection::WriteExecute,
+                (true, true, true) => Protection::ReadWriteExecute,
+                _ => Protection::None,
+            };
+            
+            // Determine region name (this would be enhanced to show mapped files, etc)
+            let name = if info.reserved != 0 {
+                Some("[reserved]".to_string())
+            } else if info.shared != 0 {
+                Some("[shared]".to_string())
+            } else {
+                None
+            };
+            
+            // Create and add the region
+            let region = MemoryRegion::new(
+                address,
+                size,
+                protection,
+                name,
+                false, // is_file_mapping would require additional work
+                info.shared == 0, // is_private (non-shared is considered private)
+            );
+            
+            self.add_region(region);
+            
+            // Move to the next region
+            address += size;
+        }
+        
+        info!("Updated memory map: {} regions found", self.regions.len());
         Ok(())
     }
 
