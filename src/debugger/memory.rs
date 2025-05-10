@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 use std::fmt;
 use std::ops::Range;
+use std::io::{Result, Error, ErrorKind};
 
 use log::{info};
 use byteorder::{ByteOrder, LittleEndian};
