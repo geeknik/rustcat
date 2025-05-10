@@ -503,7 +503,7 @@ impl VariableManager {
             
             // TODO: Use platform to read memory at address
             // For now, return a placeholder
-            return Ok(VariableValue::UInteger(0xDEADBEEF));
+            return Ok(VariableValue::UInteger(0xDEAD_BEEF));
         }
         
         // Handle address-of operator: &var
@@ -512,12 +512,10 @@ impl VariableManager {
             if let Some(var) = self.get_variable(var_name) {
                 if let Some(addr) = var.address() {
                     return Ok(VariableValue::Pointer(addr));
-                } else {
-                    return Err(anyhow!("Variable '{}' is not stored in memory", var_name));
                 }
-            } else {
-                return Err(anyhow!("Variable '{}' not found", var_name));
+                return Err(anyhow!("Variable '{}' is not stored in memory", var_name));
             }
+            return Err(anyhow!("Variable '{}' not found", var_name));
         }
         
         // Handle member access: expr.member
@@ -533,9 +531,8 @@ impl VariableManager {
                 VariableValue::Struct(fields) => {
                     if let Some(member_value) = fields.get(member_name) {
                         return Ok(member_value.clone());
-                    } else {
-                        return Err(anyhow!("Member '{}' not found in struct", member_name));
                     }
+                    return Err(anyhow!("Member '{}' not found in struct", member_name));
                 },
                 _ => return Err(anyhow!("Cannot access member of non-struct value")),
             }
@@ -573,9 +570,8 @@ impl VariableManager {
                 VariableValue::Array(elements) => {
                     if index < elements.len() {
                         return Ok(elements[index].clone());
-                    } else {
-                        return Err(anyhow!("Array index out of bounds: {} (size {})", index, elements.len()));
                     }
+                    return Err(anyhow!("Array index out of bounds: {} (size {})", index, elements.len()));
                 },
                 _ => return Err(anyhow!("Cannot index into non-array value")),
             }
@@ -595,9 +591,8 @@ impl VariableManager {
             
             if let Some(&value) = registers.get(reg_name) {
                 return Ok(VariableValue::UInteger(value));
-            } else {
-                return Err(anyhow!("Unknown register: ${}", reg_name));
             }
+            return Err(anyhow!("Unknown register: ${}", reg_name));
             
             // TODO: Access actual registers from debugger
         }
@@ -625,8 +620,8 @@ impl VariableManager {
                 // TODO: Read memory at address with appropriate type
                 // For now, return dummy values based on type
                 match type_name {
-                    "int" | "i32" => return Ok(VariableValue::Integer(0x12345678)),
-                    "long" | "i64" => return Ok(VariableValue::Integer(0x1234567890ABCDEF)),
+                    "int" | "i32" => return Ok(VariableValue::Integer(0x1234_5678)),
+                    "long" | "i64" => return Ok(VariableValue::Integer(0x1234_5678_90AB_CDEF)),
                     "float" | "f32" => return Ok(VariableValue::Float(std::f64::consts::PI)),
                     "double" | "f64" => return Ok(VariableValue::Float(std::f64::consts::E)),
                     "char" => return Ok(VariableValue::Char('A')),

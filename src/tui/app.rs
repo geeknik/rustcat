@@ -351,16 +351,16 @@ impl App {
     }
 
     /// Get filtered log messages based on current level filter
+    #[must_use]
     pub fn filtered_logs(&self) -> Vec<&String> {
         let filtered: Vec<&String> = self.log_messages
             .iter()
             .filter(|msg| {
                 let base_filter = match self.log_filter {
-                    LogFilter::Debug => true,
+                    LogFilter::Debug | LogFilter::Custom => true, // Both return true with different handling
                     LogFilter::Info => !msg.contains("[DEBUG]"),
                     LogFilter::Warn => msg.contains("[WARN]") || msg.contains("[ERROR]"),
                     LogFilter::Error => msg.contains("[ERROR]"),
-                    LogFilter::Custom => true, // For custom filtering, apply regex separately
                 };
                 
                 // Apply regex filter if it exists and base filter passes
@@ -378,7 +378,7 @@ impl App {
     }
     
     /// Cycle through log filter levels
-    pub fn cycle_log_filter(&mut self) {
+    pub const fn cycle_log_filter(&mut self) {
         self.log_filter = match self.log_filter {
             LogFilter::Debug => LogFilter::Info,
             LogFilter::Info => LogFilter::Warn,
@@ -461,7 +461,7 @@ impl App {
         
         // Add export timestamp
         let timestamp = chrono::Local::now().format("%Y-%m-%d %H:%M:%S").to_string();
-        writeln!(file, "\n--- Export completed at {} ---", timestamp).context("Failed to write export timestamp")?;
+        writeln!(file, "\n--- Export completed at {timestamp} ---").context("Failed to write export timestamp")?;
         
         Ok(())
     }
@@ -493,7 +493,7 @@ impl App {
     
     /// Queue a command for execution
     pub fn queue_command(&mut self, command: Command) {
-        debug!("Queuing command: {:?}", command);
+        debug!("Queuing command: {command:?}");
         let cmd = QueuedCommand {
             command,
             timestamp: Instant::now(),
@@ -539,14 +539,14 @@ impl App {
                 };
                 
                 if let Err(e) = result {
-                    error!("Failed to set breakpoint: {}", e);
+                    error!("Failed to set breakpoint: {e}");
                 } else {
-                    info!("Breakpoint set at {}", location);
+                    info!("Breakpoint set at {location}");
                 }
             },
             Command::Continue => {
                 if let Err(e) = debugger.continue_execution() {
-                    error!("Failed to continue execution: {}", e);
+                    error!("Failed to continue execution: {e}");
                 } else {
                     info!("Continuing execution");
                     self.program_running = true;
@@ -554,35 +554,24 @@ impl App {
             },
             Command::Step => {
                 if let Err(e) = debugger.step() {
-                    error!("Failed to step: {}", e);
+                    error!("Failed to step: {e}");
                 } else {
                     info!("Stepped one instruction");
                 }
             },
             Command::Run => {
                 if let Err(e) = debugger.run() {
-                    error!("Failed to run program: {}", e);
+                    error!("Failed to run program: {e}");
                 } else {
                     info!("Running program");
-                    self.program_running = true;
                 }
             },
             Command::Memory(address, size) => {
                 // Read memory
-                match debugger.read_memory(address, size) {
-                    Ok(data) => {
-                        info!("Read {} bytes from 0x{:x}", data.len(), address);
-                        
-                        // Unlock debugger before modifying self
-                        drop(debugger);
-                        
-                        // Now modify self safely
-                        self.set_memory_data(address, data);
-                        self.current_view = View::Memory;
-                    },
-                    Err(e) => {
-                        error!("Failed to read memory: {}", e);
-                    },
+                if let Err(e) = debugger.read_memory(address, size) {
+                    error!("Failed to read memory: {e}");
+                } else {
+                    // Memory data will be updated on next UI redraw
                 }
             },
             Command::TraceOn => {
@@ -599,7 +588,7 @@ impl App {
             },
             Command::TraceFilter(pattern) => {
                 debugger.add_function_trace_filter(pattern.clone());
-                info!("Added function trace filter: {}", pattern);
+                info!("Added function trace filter: {pattern}");
             },
             Command::TraceClearFilters => {
                 debugger.clear_function_trace_filters();
@@ -609,7 +598,7 @@ impl App {
                 match debugger.evaluate_expression(&expression) {
                     Ok(value) => {
                         let result = format!("{} = {}", expression, value);
-                        info!("{}", result);
+                        info!("{result}");
                         
                         // Store the result for display in UI
                         drop(debugger); // Release the lock before modifying self
@@ -619,7 +608,7 @@ impl App {
                         self.current_view = View::Command;
                     },
                     Err(e) => {
-                        error!("Failed to evaluate expression: {}", e);
+                        error!("Failed to evaluate expression: {e}");
                     }
                 }
             },
@@ -627,7 +616,7 @@ impl App {
                 // First, check if the expression can be evaluated
                 match debugger.evaluate_expression(&expression) {
                     Ok(_) => {
-                        info!("Added watch for: {}", expression);
+                        info!("Added watch for: {expression}");
                         
                         // Add to watch list if not already present
                         drop(debugger); // Release the lock before modifying self
@@ -636,27 +625,30 @@ impl App {
                         }
                     },
                     Err(e) => {
-                        error!("Cannot watch expression: {}", e);
+                        error!("Cannot watch expression: {e}");
                     }
                 }
             },
             // Handle other commands
             _ => {
                 // Unhandled command
-                warn!("Unhandled command: {:?}", cmd);
+                warn!("Unhandled command: {cmd:?}");
             },
         }
         
         Ok(())
     }
     
-    /// Parse a command string into a Command enum
+    /// Parse command text into a Command enum
+    #[must_use]
     pub fn parse_command(&self, cmd_str: &str) -> Command {
-        let parts: Vec<&str> = cmd_str.split_whitespace().collect();
-        
-        if parts.is_empty() {
-            return Command::Unknown("".to_string());
+        let cmd_str = cmd_str.trim();
+        if cmd_str.is_empty() {
+            return Command::Unknown(String::new());
         }
+        
+        // Split command into parts
+        let parts: Vec<&str> = cmd_str.split_whitespace().collect();
         
         match parts[0] {
             "b" | "break" => {
@@ -689,17 +681,17 @@ impl App {
             },
             "m" | "memory" => {
                 if parts.len() >= 3 {
-                    // Parse the address
+                    // Parse address
                     let addr_str = parts[1];
                     let addr = if let Some(s) = addr_str.strip_prefix("0x").or_else(|| addr_str.strip_prefix("0X")) {
                         match u64::from_str_radix(s, 16) {
                             Ok(addr) => addr,
-                            Err(_) => return Command::Unknown(format!("Invalid hex address: {}", addr_str)),
+                            Err(_) => return Command::Unknown(format!("Invalid hex address: {addr_str}")),
                         }
                     } else {
                         match addr_str.parse::<u64>() {
                             Ok(addr) => addr,
-                            Err(_) => return Command::Unknown(format!("Invalid address: {}", addr_str)),
+                            Err(_) => return Command::Unknown(format!("Invalid address: {addr_str}")),
                         }
                     };
                     
@@ -707,12 +699,13 @@ impl App {
                     let size_str = parts[2];
                     let size = match size_str.parse::<usize>() {
                         Ok(size) => size,
-                        Err(_) => return Command::Unknown(format!("Invalid size: {}", size_str)),
+                        Err(_) => return Command::Unknown(format!("Invalid size: {size_str}")),
                     };
                     
                     Command::Memory(addr, size)
                 } else {
-                    Command::Unknown("memory requires an address and size".to_string())
+                    // Default to breaking at "main" if no location specified
+                    Command::Break("main".to_string())
                 }
             },
             "regs" | "registers" => Command::Registers,

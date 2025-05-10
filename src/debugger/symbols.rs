@@ -197,13 +197,13 @@ impl SymbolTable {
         // Parse the binary
         let binary = Object::parse(&data)?;
         match binary {
-            Object::Mach(mach_o) => {
+            Object::Mach(mach_obj) => {
                 self.binary_format = Some("Mach-O".to_string());
                 // We need to handle both fat and non-fat Mach-O binaries
-                match mach_o {
-                    goblin::mach::Mach::Binary(macho) => {
-                        self.architecture = Some(Self::cpu_type_to_arch(macho.header.cputype));
-                        self.load_macho_symbols(&macho)?;
+                match mach_obj {
+                    goblin::mach::Mach::Binary(mach_binary) => {
+                        self.architecture = Some(Self::cpu_type_to_arch(mach_binary.header.cputype));
+                        self.load_macho_symbols(&mach_binary)?;
                     },
                     goblin::mach::Mach::Fat(fat) => {
                         // For fat binaries, find the ARM64 slice
@@ -212,15 +212,15 @@ impl SymbolTable {
                             if let Ok(slice) = fat.get(i) {
                                 // Extract the MachO binary from the slice
                                 match slice {
-                                    goblin::mach::SingleArch::MachO(macho) => {
+                                    goblin::mach::SingleArch::MachO(mach_binary) => {
                                         // CPU_TYPE_ARM64 == 0x100000C
-                                        if macho.header.cputype == 0x100000C {
+                                        if mach_binary.header.cputype == 0x0100_000C {
                                             self.architecture = Some("arm64".to_string());
-                                            self.load_macho_symbols(&macho)?;
+                                            self.load_macho_symbols(&mach_binary)?;
                                             break;
                                         }
                                     },
-                                    _ => continue,
+                                    _ => { /* Skip other architectures */ }
                                 }
                             }
                         }
@@ -273,9 +273,9 @@ impl SymbolTable {
     fn cpu_type_to_arch(cputype: u32) -> String {
         match cputype {
             7 => "x86".to_string(),
-            0x1000007 => "x86_64".to_string(),
+            0x0100_0007 => "x86_64".to_string(),
             12 => "arm".to_string(),
-            0x100000C => "arm64".to_string(),
+            0x0100_000C => "arm64".to_string(),
             _ => format!("unknown (0x{:x})", cputype),
         }
     }
