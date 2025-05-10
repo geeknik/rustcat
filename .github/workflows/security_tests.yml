@@ -1,0 +1,87 @@
+name: Security Tests
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+  schedule:
+    - cron: '0 0 * * 0'  # Run weekly on Sundays
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  security-tests:
+    runs-on: macos-latest
+    
+    steps:
+    - uses: actions/checkout@v3
+    
+    - name: Set up Rust
+      uses: actions-rs/toolchain@v1
+      with:
+        profile: minimal
+        toolchain: stable
+        override: true
+        components: clippy
+    
+    - name: Cache dependencies
+      uses: actions/cache@v3
+      with:
+        path: |
+          ~/.cargo/registry
+          ~/.cargo/git
+          target
+        key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+        restore-keys: ${{ runner.os }}-cargo-
+    
+    - name: Check for security vulnerabilities
+      run: |
+        cargo install cargo-audit --force
+        cargo audit
+    
+    - name: Run Clippy with security lints
+      run: |
+        cargo clippy --all-targets --all-features -- -D warnings -W clippy::all -W clippy::pedantic -W clippy::nursery -W clippy::cargo
+    
+    - name: Run unit tests
+      run: |
+        cargo test --all-features
+    
+    - name: Generate coverage report
+      run: |
+        cargo install cargo-llvm-cov --force
+        cargo llvm-cov --all-features --workspace --lcov --output-path lcov.info
+    
+    - name: Upload coverage to Codecov
+      uses: codecov/codecov-action@v3
+      with:
+        file: ./lcov.info
+        fail_ci_if_error: false
+
+  fuzz-tests:
+    runs-on: macos-latest
+    needs: security-tests
+    if: github.event_name == 'schedule'  # Only run fuzzing on scheduled runs
+    
+    steps:
+    - uses: actions/checkout@v3
+    
+    - name: Set up Rust
+      uses: actions-rs/toolchain@v1
+      with:
+        profile: minimal
+        toolchain: nightly  # Fuzzing requires nightly
+        override: true
+    
+    - name: Install cargo-fuzz
+      run: |
+        cargo install cargo-fuzz --force
+    
+    - name: Run fuzz tests (short)
+      run: |
+        # This is a placeholder. Actual fuzzing commands will be added as they are implemented
+        echo "Fuzzing not yet implemented, will be added in a future update"
+        # Example command once implemented:
+        # cargo fuzz run memory_fuzz -- -max_total_time=300 

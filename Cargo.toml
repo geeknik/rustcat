@@ -37,6 +37,15 @@ chrono = "0.4.41"
 [target.'cfg(target_os = "macos")'.dependencies]
 mach2 = "0.4.1"
 
+[dev-dependencies]
+# Testing frameworks
+proptest = "1.4.0"       # Property testing
+test-case = "3.3.1"      # Parameterized tests
+mockall = "0.12.1"       # Mocking framework
+criterion = "0.5.1"      # Benchmarking
+grcov = "0.8.19"         # Coverage reporting
+cargo-llvm-cov = "0.5.39" # LLVM coverage
+
 [features]
 default = []
 debug_symbols = []
@@ -51,3 +60,8 @@ opt-level = 3
 [profile.dev]
 debug = true
 opt-level = 0
+
+# Benchmark configuration
+[[bench]]
+name = "memory_benchmark"
+harness = false

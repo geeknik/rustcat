@@ -1,0 +1,32 @@
+[package]
+name = "rustcat-fuzz"
+version = "0.0.0"
+authors = ["Automatically generated"]
+publish = false
+edition = "2021"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+arbitrary = { version = "1", features = ["derive"] }
+
+[dependencies.rustcat]
+path = ".."
+
+# Prevent this from interfering with workspaces
+[workspace]
+members = ["."]
+
+[[bin]]
+name = "memory_fuzz"
+path = "fuzz_targets/memory_fuzz.rs"
+
+[[bin]]
+name = "command_fuzz"
+path = "fuzz_targets/command_fuzz.rs"
+
+[[bin]]
+name = "dwarf_fuzz"
+path = "fuzz_targets/dwarf_fuzz.rs" 
