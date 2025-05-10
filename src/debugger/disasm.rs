@@ -135,10 +135,10 @@ impl Disassembler {
         // Convert from little-endian bytes to a u32
         let opcode = u32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]);
         
-        let masked_inst = opcode & 0xFC000000;
+        let masked_inst = opcode & 0xFC00_0000;
         
         // Detect BL (branch with link) - call instruction
-        if masked_inst == 0x94000000 {
+        if masked_inst == 0x9400_0000 {
             // BL: bits[25:0] contains signed 26-bit offset (in 4-byte units)
             
             // For the test case [0x41, 0x00, 0x00, 0x94]:
@@ -169,7 +169,7 @@ impl Disassembler {
             }
             
             // Extract the raw 26-bit immediate value from the instruction
-            let imm26 = opcode & 0x03FFFFFF;
+            let imm26 = opcode & 0x03FF_FFFF;
             
             // Sign-extend to 32 bits (bit 25 is the sign bit)
             let offset = ((imm26 << 6) as i32) >> 6;
@@ -189,10 +189,10 @@ impl Disassembler {
         }
         
         // Detect B (branch) - unconditional branch
-        if masked_inst == 0x14000000 {
+        if masked_inst == 0x1400_0000 {
             // B: bits[25:0] contains signed 26-bit offset (in 4-byte units)
             // Extract and sign-extend the immediate value using the same logic as BL
-            let imm26 = opcode & 0x03FFFFFF;
+            let imm26 = opcode & 0x03FF_FFFF;
             let offset = ((imm26 << 6) as i32) >> 6;
             let target = (address as i64 + (offset as i64 * 4)) as u64;
             
@@ -207,9 +207,9 @@ impl Disassembler {
         }
         
         // Detect B.cond (conditional branch)
-        if (opcode & 0xFF000000) == 0x54000000 {
+        if (opcode & 0xFF00_0000) == 0x5400_0000 {
             // B.cond: bits[23:5] contains signed 19-bit offset (in 4-byte units)
-            let offset = ((opcode & 0x00FFFFE0) << 13) as i32 >> 13;
+            let offset = ((opcode & 0x00FF_FFE0) << 13) as i32 >> 13;
             let target = (address as i64 + (offset as i64 * 4)) as u64;
             
             // Get condition code from bits[3:0]
@@ -245,7 +245,7 @@ impl Disassembler {
         }
         
         // Detect RET (return) instruction
-        if (opcode & 0xFFFFFC1F) == 0xD65F0000 {
+        if (opcode & 0xFFFF_FC1F) == 0xD65F_0000 {
             let reg = (opcode >> 5) & 0x1F;
             
             let reg_name = if reg == 30 {
@@ -265,7 +265,7 @@ impl Disassembler {
         }
         
         // Detect BLR (branch with link to register) - call instruction
-        if (opcode & 0xFFFFFC1F) == 0xD63F0000 {
+        if (opcode & 0xFFFF_FC1F) == 0xD63F_0000 {
             let reg = (opcode >> 5) & 0x1F;
             
             let reg_name = if reg == 30 {
