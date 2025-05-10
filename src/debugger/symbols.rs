@@ -209,18 +209,12 @@ impl SymbolTable {
                         // For fat binaries, find the ARM64 slice
                         for i in 0..fat.narches {
                             // Use direct get method to retrieve slice
-                            if let Ok(slice) = fat.get(i) {
-                                // Extract the MachO binary from the slice
-                                match slice {
-                                    goblin::mach::SingleArch::MachO(mach_binary) => {
-                                        // CPU_TYPE_ARM64 == 0x100000C
-                                        if mach_binary.header.cputype == 0x0100_000C {
-                                            self.architecture = Some("arm64".to_string());
-                                            self.load_macho_symbols(&mach_binary)?;
-                                            break;
-                                        }
-                                    },
-                                    _ => { /* Skip other architectures */ }
+                            if let Ok(goblin::mach::SingleArch::MachO(mach_binary)) = fat.get(i) {
+                                // CPU_TYPE_ARM64 == 0x100000C
+                                if mach_binary.header.cputype == 0x0100_000C {
+                                    self.architecture = Some("arm64".to_string());
+                                    self.load_macho_symbols(&mach_binary)?;
+                                    break;
                                 }
                             }
                         }
