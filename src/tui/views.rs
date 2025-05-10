@@ -86,7 +86,7 @@ impl RegistersView {
         
         let items: Vec<ListItem> = registers
             .iter()
-            .map(|r| ListItem::new(vec![Span::styled(*r, Style::default().fg(Color::White))]))
+            .map(|r| ListItem::new(Line::from(vec![Span::styled(*r, Style::default().fg(Color::White))])))
             .collect();
         
         let list = List::new(items)
@@ -115,7 +115,7 @@ impl StackView {
         
         let items: Vec<ListItem> = stack_frames
             .iter()
-            .map(|s| ListItem::new(vec![Span::styled(*s, Style::default().fg(Color::White))]))
+            .map(|s| ListItem::new(Line::from(vec![Span::styled(*s, Style::default().fg(Color::White))])))
             .collect();
         
         let list = List::new(items)
@@ -145,7 +145,7 @@ impl ThreadsView {
         
         let items: Vec<ListItem> = threads
             .iter()
-            .map(|t| ListItem::new(vec![Span::styled(*t, Style::default().fg(Color::White))]))
+            .map(|t| ListItem::new(Line::from(vec![Span::styled(*t, Style::default().fg(Color::White))])))
             .collect();
         
         let list = List::new(items)
@@ -187,22 +187,22 @@ impl CommandView {
         
         // Display the expression evaluation result if available
         if let Some(result) = &app.expression_result {
-            items.push(ListItem::new(vec![
+            items.push(ListItem::new(Line::from(vec![
                 Span::styled("Result: ", Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)),
                 Span::styled(result, Style::default().fg(Color::LightGreen)),
-            ]));
+            ])));
             
             // Add a separator
-            items.push(ListItem::new(vec![
+            items.push(ListItem::new(Line::from(vec![
                 Span::styled("─".repeat(inner_area.width as usize), Style::default().fg(Color::DarkGray))
-            ]));
+            ])));
         }
         
         // Add command history if available
         if !app.command_history.is_empty() {
-            items.push(ListItem::new(vec![
+            items.push(ListItem::new(Line::from(vec![
                 Span::styled("Command History", Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD))
-            ]));
+            ])));
             
             // Add the most recent commands (up to 10)
             let num_items = std::cmp::min(app.command_history.len(), 10);
@@ -210,10 +210,10 @@ impl CommandView {
             
             for i in start_idx..app.command_history.len() {
                 let cmd = &app.command_history[i];
-                items.push(ListItem::new(vec![
+                items.push(ListItem::new(Line::from(vec![
                     Span::styled(format!("{}: ", i - start_idx + 1), Style::default().fg(Color::DarkGray)),
                     Span::styled(cmd, Style::default().fg(Color::White)),
-                ]));
+                ])));
             }
         }
         
@@ -226,9 +226,9 @@ impl CommandView {
         
         // If there are no items, at least show the prompt
         if items.is_empty() {
-            items.push(ListItem::new(vec![
+            items.push(ListItem::new(Line::from(vec![
                 Span::styled("Type a command and press Enter", Style::default().fg(Color::Gray)),
-            ]));
+            ])));
         }
         
         let list = List::new(items)
@@ -357,22 +357,22 @@ pub fn draw_memory_view<B: Backend>(
             
             // Create spans for the row
             let hex_span = Line::from(vec![Span::styled(
-                hex_text,
+                hex_text.clone(),
                 Style::default().fg(Color::White),
             )]);
             
             let ascii_span = Line::from(vec![Span::styled(
-                ascii_text,
+                ascii_text.clone(),
                 Style::default().fg(Color::Cyan),
             )]);
             
             // Combine spans into a row
             let row = Line::from(vec![
-                address_span,
-                Line::from(vec![Span::raw(" | ")]),
-                hex_span,
-                Line::from(vec![Span::raw(" | ")]),
-                ascii_span,
+                Span::styled(format!("{:016x}", row_address), Style::default().fg(Color::Yellow)),
+                Span::raw(" | "),
+                Span::styled(hex_text.clone(), Style::default().fg(Color::White)),
+                Span::raw(" | "),
+                Span::styled(ascii_text.clone(), Style::default().fg(Color::Cyan)),
             ]);
             
             rows.push(row);
@@ -565,13 +565,13 @@ pub fn draw_call_stack_view<B: Backend>(
                     let items: Vec<ListItem> = call_stack.iter()
                         .map(|frame| {
                             let desc = frame.description();
-                            ListItem::new(vec![
+                            ListItem::new(Line::from(vec![
                                 Span::styled(desc, if frame.number == 0 {
                                     Style::default().fg(Color::Green) // Current frame
                                 } else {
                                     Style::default()
                                 })
-                            ])
+                            ]))
                         })
                         .collect();
                     
@@ -646,7 +646,7 @@ pub fn draw_registers_view<B: Backend>(f: &mut Frame<B>, app: &App, area: Rect) 
         )),
     ];
     
-    let register_tabs = Tabs::new(vec![Line::from(titles)])
+    let register_tabs = Tabs::new(titles.into_iter().map(Line::from).collect::<Vec<_>>())
         .block(Block::default().borders(Borders::ALL).title("Register Groups"))
         .divider(symbols::line::VERTICAL)
         .highlight_style(Style::default().fg(Color::Yellow))
@@ -686,25 +686,21 @@ pub fn draw_registers_view<B: Backend>(f: &mut Frame<B>, app: &App, area: Rect) 
             };
             
             register_items.push(
-                ListItem::new(
-                    vec![
-                        Span::styled(format!("{:<5}", reg.display_name()), style.add_modifier(Modifier::BOLD)),
-                        Span::raw(" "),
-                        Span::styled(value_text, style),
-                        Span::raw(" "),
-                        Span::styled(abi_info, Style::default().fg(Color::Gray)),
-                    ]
-                )
+                ListItem::new(Line::from(vec![
+                    Span::styled(format!("{:<5}", reg.display_name()), style.add_modifier(Modifier::BOLD)),
+                    Span::raw(" "),
+                    Span::styled(value_text, style),
+                    Span::raw(" "),
+                    Span::styled(abi_info, Style::default().fg(Color::Gray)),
+                ]))
             );
         }
     } else {
         // No register data available
         register_items.push(
-            ListItem::new(
-                vec![
-                    Span::styled("No register data available", Style::default().fg(Color::Red)),
-                ]
-            )
+            ListItem::new(Line::from(vec![
+                Span::styled("No register data available", Style::default().fg(Color::Red)),
+            ]))
         );
     }
     
@@ -798,10 +794,10 @@ impl DisassemblyView {
                         ins.text
                     );
                     
-                    ListItem::new(vec![Span::styled(
+                    ListItem::new(Line::from(vec![Span::styled(
                         line,
                         style,
-                    )])
+                    )]))
                 }).collect();
                 
                 // Create and render the list
@@ -872,7 +868,7 @@ impl TraceView {
                                     Style::default()
                                 };
                                 
-                                ListItem::new(vec![Span::styled(call.clone(), style)])
+                                ListItem::new(Line::from(vec![Span::styled(call.clone(), style)]))
                             })
                             .collect();
                         
@@ -1047,9 +1043,9 @@ impl VariablesView {
                 
                 // First, show watch expressions if any
                 if !app.watch_expressions.is_empty() {
-                    items.push(ListItem::new(vec![
+                    items.push(ListItem::new(Line::from(vec![
                         Span::styled("Watched Expressions", Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD))
-                    ]));
+                    ])));
                     
                     // Get frame variables before we drop the debugger
                     let _frame_vars = debugger.get_variables_by_frame(frame_index);
@@ -1068,20 +1064,20 @@ impl VariablesView {
                             format!("{} = <unavailable>", expr)
                         };
                         
-                        items.push(ListItem::new(vec![
+                        items.push(ListItem::new(Line::from(vec![
                             Span::styled(expr_result, Style::default().fg(Color::LightCyan))
-                        ]));
+                        ])));
                     }
                     
                     // Add a separator
-                    items.push(ListItem::new(vec![
+                    items.push(ListItem::new(Line::from(vec![
                         Span::styled("─".repeat(inner_area.width as usize), Style::default().fg(Color::DarkGray))
-                    ]));
+                    ])));
                     
                     // Add a header for regular variables
-                    items.push(ListItem::new(vec![
+                    items.push(ListItem::new(Line::from(vec![
                         Span::styled("Local Variables", Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD))
-                    ]));
+                    ])));
                     
                     // Re-acquire the debugger to show variables
                     if let Ok(debugger) = app.debugger.try_lock() {
@@ -1096,20 +1092,20 @@ impl VariablesView {
                                     line_style = line_style.fg(Color::Yellow);
                                 }
                                 
-                                items.push(ListItem::new(vec![
+                                items.push(ListItem::new(Line::from(vec![
                                     Span::styled(var.format(), line_style)
-                                ]));
+                                ])));
                             }
                         } else {
-                            items.push(ListItem::new(vec![
+                            items.push(ListItem::new(Line::from(vec![
                                 Span::styled("No local variables in this frame", Style::default().fg(Color::Gray))
-                            ]));
+                            ])));
                         }
                     } else {
                         // Couldn't reacquire the debugger
-                        items.push(ListItem::new(vec![
+                        items.push(ListItem::new(Line::from(vec![
                             Span::styled("Cannot access debugger to show variables", Style::default().fg(Color::Red))
-                        ]));
+                        ])));
                     }
                 } else {
                     // No watch expressions - just show variables
@@ -1124,22 +1120,22 @@ impl VariablesView {
                                 line_style = line_style.fg(Color::Yellow);
                             }
                             
-                            items.push(ListItem::new(vec![
+                            items.push(ListItem::new(Line::from(vec![
                                 Span::styled(var.format(), line_style)
-                            ]));
+                            ])));
                         }
                     } else {
-                        items.push(ListItem::new(vec![
+                        items.push(ListItem::new(Line::from(vec![
                             Span::styled("No variables available in this frame", Style::default().fg(Color::Gray))
-                        ]));
+                        ])));
                     }
                 }
                 
                 // If no items to display at all
                 if items.is_empty() {
-                    items.push(ListItem::new(vec![
+                    items.push(ListItem::new(Line::from(vec![
                         Span::styled("No variables or watch expressions available", Style::default().fg(Color::Gray))
-                    ]));
+                    ])));
                 }
                 
                 let list = List::new(items)
