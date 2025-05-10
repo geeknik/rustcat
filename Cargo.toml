@@ -6,6 +6,8 @@ description = "A MacOS-Only, Rust-Based, Fast-as-Hell Native Debugger"
 authors = ["geeknik"]
 license = "MIT"
 repository = "https://github.com/geeknik/rustcat"
+keywords = ["debugger", "macos", "terminal", "tui", "arm64"]
+categories = ["development-tools", "command-line-utilities", "debugging", "visualization"]
 
 [dependencies]
 # UI/TUI dependencies
@@ -13,8 +15,8 @@ ratatui = "0.23.0"
 crossterm = "0.27.0"
 
 # Parsing libraries
-gimli = "0.27.3"
-object = "0.32.1"
+gimli = "0.31.1"
+object = "0.36.7"
 goblin = "0.7.1"
 libc = "0.2.172"
 cpp_demangle = "0.4.3"
@@ -32,6 +34,10 @@ env_logger = "0.10.0"
 byteorder = "1.4.3"
 regex = "1.11.1"
 chrono = "0.4.41"
+
+# Set specific Windows dependencies versions
+windows-sys = "0.52.0"
+mio = "1.0.3"
 
 # Platform-specific dependencies
 [target.'cfg(target_os = "macos")'.dependencies]

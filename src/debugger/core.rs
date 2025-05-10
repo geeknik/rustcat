@@ -781,11 +781,11 @@ impl Debugger {
         let mut stack = Vec::new();
         let mut frame_pc = pc;
         let mut frame_sp = sp;
-        let mut frame_fp = fp;
+        let mut frame_pointer = fp;
         let mut frame_number = 0;
         
         // Add the current frame
-        let mut current_frame = StackFrame::new(frame_number, frame_pc, frame_sp, frame_fp);
+        let mut current_frame = StackFrame::new(frame_number, frame_pc, frame_sp, frame_pointer);
         
         // Try to get function name and source location
         if let Some(symbol) = {
@@ -807,7 +807,7 @@ impl Debugger {
         
         // We'd typically use DWARF info here for unwinding, but for now we'll use
         // a simple frame pointer-based approach for ARM64
-        while frame_fp > 0 && stack.len() < MAX_STACK_FRAMES {
+        while frame_pointer > 0 && stack.len() < MAX_STACK_FRAMES {
             // For ARM64, the frame looks like:
             // [FP, +0]: Previous FP
             // [FP, +8]: Return address (LR)
@@ -815,7 +815,7 @@ impl Debugger {
             // Read previous frame pointer
             if let Ok(data) = self.platform.read_memory(
                 self.pid.unwrap(), 
-                frame_fp, 
+                frame_pointer, 
                 16 // 16 bytes for FP and LR
             ) {
                 if data.len() >= 16 {
@@ -831,18 +831,18 @@ impl Debugger {
                     ]);
                     
                     // If we've reached the end of the stack or have invalid values, break
-                    if prev_fp <= frame_fp || return_addr == 0 {
+                    if prev_fp <= frame_pointer || return_addr == 0 {
                         break;
                     }
                     
                     // Update frame values
                     frame_pc = return_addr;
-                    frame_sp = frame_fp + 16; // Approximate
-                    frame_fp = prev_fp;
+                    frame_sp = frame_pointer + 16; // Approximate
+                    frame_pointer = prev_fp;
                     frame_number += 1;
                     
                     // Create new frame
-                    let mut next_frame = StackFrame::new(frame_number, frame_pc, frame_sp, frame_fp);
+                    let mut next_frame = StackFrame::new(frame_number, frame_pc, frame_sp, frame_pointer);
                     
                     // Try to get function name and source location
                     if let Some(symbol) = {

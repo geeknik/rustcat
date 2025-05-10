@@ -283,9 +283,8 @@ impl MemoryMap {
             let offset = address - region.base;
             if let Some(name) = &region.name {
                 return format!("{} + 0x{:x}", name, offset);
-            } else {
-                return format!("region 0x{:x} + 0x{:x}", region.base, offset);
             }
+            return format!("region 0x{:x} + 0x{:x}", region.base, offset);
         }
 
         format!("unmapped address 0x{:x}", address)
