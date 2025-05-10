@@ -1,9 +1,9 @@
 use std::collections::HashMap;
 use std::fmt;
 use std::ops::Range;
-use std::io::{Result, Error, ErrorKind};
+use std::io::Result;
 
-use log::{info};
+use log::info;
 use byteorder::{ByteOrder, LittleEndian};
 
 // MacOS specific imports for memory region mapping

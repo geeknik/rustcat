@@ -2,7 +2,7 @@ use ratatui::{
     backend::Backend,
     layout::{Rect, Alignment, Layout, Constraint, Direction},
     style::{Color, Modifier, Style},
-    text::{Line, Span, Spans},
+    text::{Line, Span},
     widgets::{Block, Borders, List, ListItem, Paragraph, Table, Row, Cell, Tabs, ListState, Wrap},
     symbols,
     Frame,
