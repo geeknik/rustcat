@@ -156,8 +156,58 @@ fn draw_main_area<B: Backend>(f: &mut Frame<B>, app: &App, area: Rect) {
             code_view.render(f, area);
         },
         View::Memory => {
-            let memory_view = MemoryView::new();
-            memory_view.render(f, area);
+            // Use our enhanced memory view
+            // Check if app has memory data to display
+            if let Some(last_memory) = app.get_memory_data() {
+                let (address, data) = last_memory;
+                
+                // Create a layout with space for a format selector at the bottom
+                let chunks = Layout::default()
+                    .direction(Direction::Vertical)
+                    .constraints([
+                        Constraint::Min(5),       // Memory view
+                        Constraint::Length(3),    // Format selector
+                    ])
+                    .split(area);
+                
+                // Draw the memory view in the top chunk
+                crate::tui::views::draw_memory_view(f, app, chunks[0], Some(&data), address);
+                
+                // Draw format selector in the bottom chunk
+                let current_format = app.get_memory_format();
+                let formats = vec![
+                    "[1] Hex",
+                    "[2] ASCII",
+                    "[3] UTF-8",
+                    "[4] U32",
+                    "[5] I32",
+                    "[6] F32",
+                ];
+                
+                let format_spans: Vec<Span> = formats.into_iter()
+                    .map(|fmt| {
+                        let (index, name) = fmt.split_at(3);
+                        let style = if fmt.contains(current_format.name()) {
+                            Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)
+                        } else {
+                            Style::default().fg(Color::Gray)
+                        };
+                        Span::styled(format!("{}{}", index, name), style)
+                    })
+                    .collect();
+                
+                let format_bar = Paragraph::new(Line::from(format_spans))
+                    .block(Block::default()
+                        .borders(Borders::ALL)
+                        .title("Format")
+                        .border_style(Style::default().fg(Color::Gray)))
+                    .alignment(Alignment::Center);
+                
+                f.render_widget(format_bar, chunks[1]);
+            } else {
+                // No memory loaded yet, show empty view
+                crate::tui::views::draw_memory_view(f, app, area, None, 0);
+            }
         },
         View::Registers => {
             let registers_view = RegistersView::new();

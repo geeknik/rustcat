@@ -1,11 +1,14 @@
 use ratatui::{
     backend::Backend,
-    layout::Rect,
+    layout::{Rect, Alignment},
     style::{Color, Modifier, Style},
     text::{Line, Span},
     widgets::{Block, Borders, List, ListItem, Paragraph},
     Frame,
 };
+
+use crate::tui::app::{App, View};
+use crate::debugger::memory::MemoryFormat;
 
 /// View for the code display
 pub struct CodeView;
@@ -172,5 +175,156 @@ impl CommandView {
             .style(Style::default().fg(Color::White));
         
         f.render_widget(paragraph, area);
+    }
+}
+
+/// Draw memory view in the specified area
+pub fn draw_memory_view<B: Backend>(
+    f: &mut Frame<B>,
+    app: &App,
+    area: Rect,
+    memory_data: Option<&Vec<u8>>,
+    memory_address: u64,
+) {
+    let block = Block::default()
+        .title(Span::styled(
+            format!("Memory - {}", app.get_memory_format().name()),
+            Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD),
+        ))
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(if app.current_view == View::Memory {
+            Color::Green
+        } else {
+            Color::Gray
+        }));
+    
+    let inner_area = block.inner(area);
+    f.render_widget(block, area);
+    
+    if let Some(data) = memory_data {
+        // Calculate how many bytes fit per row (16 bytes is standard)
+        let bytes_per_row = 16;
+        
+        // Calculate visible rows
+        let visible_rows = inner_area.height as usize;
+        
+        // Check if we should use specialized formatting
+        if app.get_memory_format() != MemoryFormat::Hex && 
+           app.get_memory_format() != MemoryFormat::Ascii {
+            // Use specialized formatters
+            // Create a debugger instance to format the memory
+            if let Ok(debugger) = crate::debugger::core::Debugger::new("dummy") {
+                let formatted = debugger.format_memory(data, app.get_memory_format());
+                let lines: Vec<&str> = formatted.lines().take(visible_rows).collect();
+                
+                let text: Vec<Line> = lines.into_iter()
+                    .map(|line| Line::from(line))
+                    .collect();
+                
+                let memory_paragraph = Paragraph::new(text)
+                    .style(Style::default().fg(Color::White))
+                    .block(Block::default());
+                
+                f.render_widget(memory_paragraph, inner_area);
+                return;
+            }
+        }
+        
+        // Calculate total rows
+        let total_rows = (data.len() + bytes_per_row - 1) / bytes_per_row;
+        
+        // Prepare rows of text
+        let mut rows = Vec::with_capacity(visible_rows.min(total_rows));
+        
+        for row_idx in 0..visible_rows.min(total_rows) {
+            let row_address = memory_address + (row_idx * bytes_per_row) as u64;
+            let start_idx = row_idx * bytes_per_row;
+            let end_idx = (start_idx + bytes_per_row).min(data.len());
+            
+            // Generate address column
+            let address_text = format!("{:016x}", row_address);
+            let address_span = Span::styled(
+                address_text,
+                Style::default().fg(Color::Yellow),
+            );
+            
+            // Generate hex representation
+            let mut hex_text = String::with_capacity(bytes_per_row * 3);
+            let mut ascii_text = String::with_capacity(bytes_per_row);
+            
+            for i in start_idx..end_idx {
+                let byte = data[i];
+                
+                // Add hex representation
+                hex_text.push_str(&format!("{:02x} ", byte));
+                
+                // Add ASCII representation (only printable characters)
+                if byte >= 32 && byte <= 126 {
+                    ascii_text.push(byte as char);
+                } else {
+                    ascii_text.push('.');
+                }
+            }
+            
+            // Pad hex text if needed
+            if end_idx - start_idx < bytes_per_row {
+                for _ in 0..(bytes_per_row - (end_idx - start_idx)) {
+                    hex_text.push_str("   ");
+                    ascii_text.push(' ');
+                }
+            }
+            
+            // Create spans for the row
+            let hex_span = Span::styled(
+                hex_text,
+                Style::default().fg(Color::White),
+            );
+            
+            let ascii_span = Span::styled(
+                ascii_text,
+                Style::default().fg(Color::Cyan),
+            );
+            
+            // Combine spans into a row
+            let row = Line::from(vec![
+                address_span,
+                Span::raw(" | "),
+                hex_span,
+                Span::raw(" | "),
+                ascii_span,
+            ]);
+            
+            rows.push(row);
+        }
+        
+        // Create paragraph with all rows
+        let memory_paragraph = Paragraph::new(rows)
+            .style(Style::default().fg(Color::White))
+            .block(Block::default());
+        
+        f.render_widget(memory_paragraph, inner_area);
+    } else {
+        // No memory data available
+        let text = vec![
+            Line::from(vec![
+                Span::styled(
+                    "No memory data available.",
+                    Style::default().fg(Color::Red),
+                ),
+            ]),
+            Line::from(vec![
+                Span::styled(
+                    "Use 'memory <address> <size>' to view memory.",
+                    Style::default().fg(Color::Yellow),
+                ),
+            ]),
+        ];
+        
+        let help_para = Paragraph::new(text)
+            .style(Style::default())
+            .block(Block::default())
+            .alignment(Alignment::Center);
+        
+        f.render_widget(help_para, inner_area);
     }
 }

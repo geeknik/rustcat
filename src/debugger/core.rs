@@ -304,11 +304,42 @@ impl Debugger {
     }
     
     /// Read memory from the target process
-    pub fn read_memory(&self, address: u64, size: usize) -> Result<Vec<u8>> {
+    pub fn read_memory(&mut self, address: u64, size: usize) -> Result<Vec<u8>> {
+        debug!("Reading {} bytes from 0x{:x}", size, address);
+        
         if let Some(pid) = self.pid {
-            self.platform.read_memory(pid, address, size)
+            // Update the memory map if needed
+            if self.memory_map.is_none() {
+                let mut mem_map = crate::debugger::memory::MemoryMap::new();
+                if let Err(e) = mem_map.update_from_process(pid) {
+                    warn!("Failed to update memory map: {}", e);
+                    // Continue anyway, as we can still try to read memory
+                }
+                self.memory_map = Some(mem_map);
+            }
+            
+            // Read memory using the platform implementation
+            let data = self.platform.read_memory(pid, address, size)?;
+            
+            // Save the last memory read in our memory map for future reference
+            if let Some(mem_map) = &mut self.memory_map {
+                mem_map.set_last_dump(address, size);
+                
+                // Log some info about the region
+                if let Some(region) = mem_map.find_region(address) {
+                    let description = mem_map.describe_address(address);
+                    debug!("Memory region: {}", description);
+                    
+                    // Print execution warnings
+                    if region.protection.can_execute() {
+                        debug!("Note: This memory region is executable");
+                    }
+                }
+            }
+            
+            Ok(data)
         } else {
-            Err(anyhow!("Cannot read memory: program not loaded"))
+            Err(anyhow!("No process attached"))
         }
     }
     
@@ -432,6 +463,41 @@ impl Debugger {
     /// Get source code lines around a given line
     pub fn get_source_lines(&self, file_path: &str, line: u32, context: u32) -> Result<Vec<(u32, String)>> {
         self.dwarf_parser.get_source_lines(file_path, line, context)
+    }
+
+    /// Format memory in different representations
+    pub fn format_memory(&self, data: &[u8], format: crate::debugger::memory::MemoryFormat) -> String {
+        if let Some(mem_map) = &self.memory_map {
+            mem_map.format_memory(data, format)
+        } else {
+            // Fallback to simple hex formatting
+            let mut result = String::new();
+            for chunk in data.chunks(16) {
+                let hex: Vec<String> = chunk.iter().map(|b| format!("{:02x}", b)).collect();
+                result.push_str(&hex.join(" "));
+                result.push('\n');
+            }
+            result
+        }
+    }
+
+    /// Track a named memory allocation
+    pub fn track_allocation(&mut self, name: &str, address: u64, size: u64) -> Result<()> {
+        if let Some(mem_map) = &mut self.memory_map {
+            mem_map.track_allocation(name, address, size);
+            Ok(())
+        } else {
+            Err(anyhow!("Memory map not initialized"))
+        }
+    }
+
+    /// Stop tracking a named memory allocation
+    pub fn untrack_allocation(&mut self, name: &str) -> Result<bool> {
+        if let Some(mem_map) = &mut self.memory_map {
+            Ok(mem_map.untrack_allocation(name))
+        } else {
+            Err(anyhow!("Memory map not initialized"))
+        }
     }
 }
 

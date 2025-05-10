@@ -83,3 +83,6 @@ tmp/
 */secrets/*
 *_auth_token
 *_api_key
+
+# Misc
+rules.mdc

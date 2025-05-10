@@ -12,14 +12,15 @@ use crossterm::terminal::{disable_raw_mode, enable_raw_mode};
 use crossterm::execute;
 use crossterm::event::EnableMouseCapture;
 use crossterm::event::DisableMouseCapture;
-use log::{LevelFilter, Level};
+use log::{debug, info, warn, error, LevelFilter, Level};
 use ratatui::backend::CrosstermBackend;
 use ratatui::layout::Rect;
 use ratatui::Terminal;
 use regex::Regex;
 
-use crate::debugger::core::Debugger;
+use crate::debugger::core::{Debugger, DebuggerState};
 use crate::debugger::breakpoint::Breakpoint;
+use crate::debugger::memory::MemoryFormat;
 use crate::tui::ui::draw_ui;
 use crate::tui::ui::setup_log_capture;
 use crate::tui::events::Events;
@@ -193,6 +194,10 @@ pub struct App {
     context_menu_selected: usize,
     /// Documentation for commands
     command_docs: HashMap<String, String>,
+    /// Memory view data
+    memory_data: Option<(u64, Vec<u8>)>,
+    /// Current memory format for display
+    memory_format: MemoryFormat,
 }
 
 /// Available views in the application
@@ -267,6 +272,8 @@ impl App {
             command_queue: VecDeque::new(),
             context_menu_selected: 0,
             command_docs: command_docs,
+            memory_data: None,
+            memory_format: MemoryFormat::Hex,
         })
     }
 
@@ -413,224 +420,197 @@ impl App {
     
     /// Queue a command for execution
     pub fn queue_command(&mut self, command: Command) {
-        self.command_queue.push_back(QueuedCommand {
+        debug!("Queuing command: {:?}", command);
+        let cmd = QueuedCommand {
             command,
             timestamp: Instant::now(),
             retries: 0,
-        });
+        };
+        self.command_queue.push_back(cmd);
     }
     
-    /// Process queued commands
+    /// Process the command queue
     fn process_command_queue(&mut self) -> Result<()> {
-        // Only try to process if there are commands in the queue
+        // Skip if no debugger available yet
+        if self.debugger.lock().unwrap().get_state() == DebuggerState::Idle {
+            return Ok(());
+        }
+        
+        // Get the next command if queue isn't empty
         if self.command_queue.is_empty() {
             return Ok(());
         }
         
-        // Try to get the debugger lock with timeout
-        match self.debugger.try_lock() {
-            Ok(mut debugger) => {
-                // Process the first command in the queue
-                if let Some(queued_cmd) = self.command_queue.pop_front() {
-                    let result = match queued_cmd.command {
-                        Command::Break(location) => {
-                            let timestamp = chrono::Local::now().format("%Y-%m-%d %H:%M:%S").to_string();
-                            // Try to parse as a memory address first
-                            if location.starts_with("0x") || location.starts_with("0X") {
-                                // Parse hex address
-                                let addr_str = if location.starts_with("0x") || location.starts_with("0X") {
-                                    &location[2..]
-                                } else {
-                                    &location
-                                };
-                                
-                                match u64::from_str_radix(addr_str, 16) {
-                                    Ok(addr) => {
-                                        match debugger.set_breakpoint(addr) {
-                                            Ok(_) => {
-                                                self.log_messages.push_back(
-                                                    format!("[{}] [INFO] Breakpoint set at {} (0x{:x})", timestamp, location, addr)
-                                                );
-                                                Ok(())
-                                            },
-                                            Err(e) => Err(anyhow!("Failed to set breakpoint: {}", e))
-                                        }
-                                    },
-                                    Err(e) => Err(anyhow!("Failed to parse address: {}", e))
-                                }
-                            } else if let Ok(addr) = location.parse::<u64>() {
-                                // Parse decimal address
-                                match debugger.set_breakpoint(addr) {
-                                    Ok(_) => {
-                                        self.log_messages.push_back(
-                                            format!("[{}] [INFO] Breakpoint set at {} (0x{:x})", timestamp, location, addr)
-                                        );
-                                        Ok(())
-                                    },
-                                    Err(e) => Err(anyhow!("Failed to set breakpoint: {}", e))
-                                }
-                            } else {
-                                // Try as function name
-                                match debugger.set_breakpoint_by_name(&location) {
-                                    Ok(_) => {
-                                        self.log_messages.push_back(
-                                            format!("[{}] [INFO] Breakpoint set at function {}", timestamp, location)
-                                        );
-                                        Ok(())
-                                    },
-                                    Err(e) => Err(anyhow!("Failed to set breakpoint: {}", e))
-                                }
-                            }
-                        },
-                        Command::Continue => {
-                            debugger.continue_execution().context("Failed to continue execution")
-                        },
-                        Command::Step => {
-                            // Try to step into function
-                            let timestamp = chrono::Local::now().format("%Y-%m-%d %H:%M:%S").to_string();
-                            match debugger.step() {
-                                Ok(_) => {
-                                    self.log_messages.push_back(
-                                        format!("[{}] [INFO] Stepped into instruction", timestamp)
-                                    );
-                                    Ok(())
-                                },
-                                Err(e) => Err(anyhow!("Step failed: {}", e))
-                            }
-                        },
-                        Command::Next => {
-                            // Try to step over function (using step until step_over is implemented)
-                            let timestamp = chrono::Local::now().format("%Y-%m-%d %H:%M:%S").to_string();
-                            match debugger.step() {  // Use step() until step_over() is implemented
-                                Ok(_) => {
-                                    self.log_messages.push_back(
-                                        format!("[{}] [INFO] Stepped over instruction", timestamp)
-                                    );
-                                    Ok(())
-                                },
-                                Err(e) => Err(anyhow!("Step over failed: {}", e))
-                            }
-                        },
-                        Command::Run => {
-                            debugger.run().context("Failed to run program")
-                        },
-                        Command::Quit => {
-                            self.running = false;
-                            Ok(())
-                        },
-                        Command::Print(expr) => {
-                            // Placeholder for expression evaluation
-                            let value = if expr.starts_with("0x") {
-                                // Try to parse as hex
-                                if let Ok(val) = u64::from_str_radix(&expr[2..], 16) {
-                                    format!("0x{:x} ({})", val, val)
-                                } else {
-                                    "Error: Invalid hex expression".to_string()
-                                }
-                            } else if let Ok(val) = expr.parse::<u64>() {
-                                // Try to parse as decimal
-                                format!("{} (0x{:x})", val, val)
-                            } else {
-                                // Just return a placeholder value
-                                format!("<{}> (type unknown)", expr)
-                            };
-                            
-                            let timestamp = chrono::Local::now().format("%Y-%m-%d %H:%M:%S").to_string();
-                            self.log_messages.push_back(
-                                format!("[{}] [INFO] {} = {}", timestamp, expr, value)
-                            );
-                            Ok(())
-                        },
-                        // Handle other commands...
-                        _ => {
-                            let timestamp = chrono::Local::now().format("%Y-%m-%d %H:%M:%S").to_string();
-                            self.log_messages.push_back(
-                                format!("[{}] [WARN] Command not implemented yet", timestamp)
-                            );
-                            Ok(())
-                        }
-                    };
-                    
-                    // Handle command result
-                    if let Err(e) = result {
-                        let timestamp = chrono::Local::now().format("%Y-%m-%d %H:%M:%S").to_string();
-                        self.log_messages.push_back(
-                            format!("[{}] [ERROR] Command failed: {}", timestamp, e)
-                        );
+        // Pop the command first to avoid borrow checker issues
+        let cmd = self.command_queue.pop_front().unwrap().command;
+        
+        // Lock the debugger only once for the entire command processing
+        let mut debugger = self.debugger.lock().unwrap();
+        
+        match cmd {
+            Command::Break(location) => {
+                let result = if location.starts_with("0x") {
+                    // Hex address
+                    match u64::from_str_radix(&location[2..], 16) {
+                        Ok(addr) => debugger.set_breakpoint(addr),
+                        Err(_) => Err(anyhow!("Invalid hex address: {}", location)),
                     }
-                    
-                    // Update state directly while still holding the lock
-                    self.breakpoints = debugger.get_breakpoints().to_vec();
-                    self.breakpoint_count = self.breakpoints.len();
-                    self.current_function = Some("main".to_string());
-                    self.program_running = false;
+                } else if location.chars().all(|c| c.is_digit(10)) {
+                    // Decimal address
+                    match location.parse::<u64>() {
+                        Ok(addr) => debugger.set_breakpoint(addr),
+                        Err(_) => Err(anyhow!("Invalid address: {}", location)),
+                    }
+                } else {
+                    // Symbol name
+                    debugger.set_breakpoint_by_name(&location)
+                };
+                
+                if let Err(e) = result {
+                    error!("Failed to set breakpoint: {}", e);
+                } else {
+                    info!("Breakpoint set at {}", location);
                 }
             },
-            Err(_) => {
-                // If we couldn't get the lock, check if we should retry
-                if let Some(cmd) = self.command_queue.front_mut() {
-                    // Only retry up to 3 times and only for commands less than 5 seconds old
-                    if cmd.retries < 3 && cmd.timestamp.elapsed() < Duration::from_secs(5) {
-                        cmd.retries += 1;
-                        // Log retry attempt
-                        let timestamp = chrono::Local::now().format("%Y-%m-%d %H:%M:%S").to_string();
-                        self.log_messages.push_back(
-                            format!("[{}] [WARN] Retrying command (attempt {})", timestamp, cmd.retries)
-                        );
-                    } else {
-                        // Command expired or too many retries
-                        let cmd = self.command_queue.pop_front().unwrap();
-                        let timestamp = chrono::Local::now().format("%Y-%m-%d %H:%M:%S").to_string();
-                        self.log_messages.push_back(
-                            format!("[{}] [ERROR] Command timed out after {} retries", timestamp, cmd.retries)
-                        );
-                    }
+            Command::Continue => {
+                if let Err(e) = debugger.continue_execution() {
+                    error!("Failed to continue execution: {}", e);
+                } else {
+                    info!("Continuing execution");
+                    self.program_running = true;
                 }
-            }
+            },
+            Command::Step => {
+                if let Err(e) = debugger.step() {
+                    error!("Failed to step: {}", e);
+                } else {
+                    info!("Stepped one instruction");
+                }
+            },
+            Command::Run => {
+                if let Err(e) = debugger.run() {
+                    error!("Failed to run program: {}", e);
+                } else {
+                    info!("Running program");
+                    self.program_running = true;
+                }
+            },
+            Command::Memory(address, size) => {
+                // Read memory
+                match debugger.read_memory(address, size) {
+                    Ok(data) => {
+                        info!("Read {} bytes from 0x{:x}", data.len(), address);
+                        
+                        // Unlock debugger before modifying self
+                        drop(debugger);
+                        
+                        // Now modify self safely
+                        self.set_memory_data(address, data);
+                        self.current_view = View::Memory;
+                    },
+                    Err(e) => {
+                        error!("Failed to read memory: {}", e);
+                    },
+                }
+            },
+            // Handle other commands
+            _ => {
+                // Unhandled command
+                warn!("Unhandled command: {:?}", cmd);
+            },
         }
         
         Ok(())
     }
     
-    /// Parse a command string into a structured Command
+    /// Parse a command string into a Command enum
     pub fn parse_command(&self, cmd_str: &str) -> Command {
-        let cmd_str = cmd_str.trim();
+        let parts: Vec<&str> = cmd_str.split_whitespace().collect();
         
-        // Empty command
-        if cmd_str.is_empty() {
+        if parts.is_empty() {
             return Command::Unknown("".to_string());
         }
         
-        // Split by whitespace to get command and args
-        let parts: Vec<&str> = cmd_str.split_whitespace().collect();
-        let cmd_name = parts[0].to_lowercase();
-        let args = &parts[1..];
-        
-        match cmd_name.as_str() {
+        match parts[0] {
             "b" | "break" => {
-                if args.is_empty() {
-                    Command::Unknown("break requires an address or function name".to_string())
+                if parts.len() > 1 {
+                    Command::Break(parts[1].to_string())
                 } else {
-                    Command::Break(args.join(" "))
+                    Command::Unknown("break requires an address or function name".to_string())
                 }
             },
             "c" | "continue" => Command::Continue,
             "s" | "step" => Command::Step,
             "n" | "next" => Command::Next,
+            "fin" | "finish" => Command::Finish,
             "r" | "run" => Command::Run,
+            "restart" => Command::Restart,
             "q" | "quit" => Command::Quit,
             "p" | "print" => {
-                if args.is_empty() {
-                    Command::Unknown("print requires an expression".to_string())
+                if parts.len() > 1 {
+                    Command::Print(parts[1..].join(" "))
                 } else {
-                    Command::Print(args.join(" "))
+                    Command::Unknown("print requires an expression".to_string())
                 }
             },
-            "h" | "help" => {
-                if args.is_empty() {
-                    Command::Help(None)
+            "display" => {
+                if parts.len() > 1 {
+                    Command::Display(parts[1..].join(" "))
                 } else {
-                    Command::Help(Some(args[0].to_string()))
+                    Command::Unknown("display requires an expression".to_string())
+                }
+            },
+            "m" | "memory" => {
+                if parts.len() >= 3 {
+                    // Parse the address
+                    let addr_str = parts[1];
+                    let addr = if addr_str.starts_with("0x") || addr_str.starts_with("0X") {
+                        // Hex address
+                        match u64::from_str_radix(&addr_str[2..], 16) {
+                            Ok(addr) => addr,
+                            Err(_) => return Command::Unknown(format!("Invalid hex address: {}", addr_str)),
+                        }
+                    } else {
+                        // Decimal address
+                        match addr_str.parse::<u64>() {
+                            Ok(addr) => addr,
+                            Err(_) => return Command::Unknown(format!("Invalid address: {}", addr_str)),
+                        }
+                    };
+                    
+                    // Parse the size
+                    let size_str = parts[2];
+                    let size = match size_str.parse::<usize>() {
+                        Ok(size) => size,
+                        Err(_) => return Command::Unknown(format!("Invalid size: {}", size_str)),
+                    };
+                    
+                    Command::Memory(addr, size)
+                } else {
+                    Command::Unknown("memory requires an address and size".to_string())
+                }
+            },
+            "regs" | "registers" => Command::Registers,
+            "bt" | "backtrace" => Command::Backtrace,
+            "h" | "help" => {
+                if parts.len() > 1 {
+                    Command::Help(Some(parts[1].to_string()))
+                } else {
+                    Command::Help(None)
+                }
+            },
+            "set" => {
+                if parts.len() >= 3 {
+                    Command::Set(parts[1].to_string(), parts[2..].join(" "))
+                } else {
+                    Command::Unknown("set requires a variable name and value".to_string())
+                }
+            },
+            "source" => {
+                if parts.len() > 1 {
+                    Command::Source(parts[1].to_string())
+                } else {
+                    Command::Unknown("source requires a filename".to_string())
                 }
             },
             _ => Command::Unknown(cmd_str.to_string()),
@@ -1054,5 +1034,38 @@ impl App {
         }
         
         Ok(())
+    }
+
+    /// Get memory data for display
+    pub fn get_memory_data(&self) -> Option<(u64, &Vec<u8>)> {
+        self.memory_data.as_ref().map(|(addr, data)| (*addr, data))
+    }
+    
+    /// Set memory data for display
+    pub fn set_memory_data(&mut self, address: u64, data: Vec<u8>) {
+        self.memory_data = Some((address, data));
+    }
+    
+    /// Get current memory format
+    pub fn get_memory_format(&self) -> MemoryFormat {
+        self.memory_format
+    }
+    
+    /// Set memory format
+    pub fn set_memory_format(&mut self, format: MemoryFormat) {
+        self.memory_format = format;
+    }
+    
+    /// Cycle through memory formats
+    pub fn cycle_memory_format(&mut self) {
+        self.memory_format = match self.memory_format {
+            MemoryFormat::Hex => MemoryFormat::Ascii,
+            MemoryFormat::Ascii => MemoryFormat::Utf8,
+            MemoryFormat::Utf8 => MemoryFormat::U32,
+            MemoryFormat::U32 => MemoryFormat::I32,
+            MemoryFormat::I32 => MemoryFormat::F32,
+            MemoryFormat::F32 => MemoryFormat::Hex,
+            _ => MemoryFormat::Hex,
+        };
     }
 }
