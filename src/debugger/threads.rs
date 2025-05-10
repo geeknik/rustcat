@@ -427,7 +427,7 @@ impl ThreadManager {
     }
     
     /// Add a thread
-    pub fn add_thread(&mut self, mut thread: Thread) {
+    pub fn add_thread(&mut self, mut thread: Thread) -> Result<()> {
         let tid = thread.tid();
         
         // Record thread creation
@@ -456,10 +456,11 @@ impl ThreadManager {
              if let Some(name) = thread.name() { format!(" ({})", name) } else { String::new() });
         
         self.threads.insert(tid, thread);
+        Ok(())
     }
     
     /// Remove a thread
-    pub fn remove_thread(&mut self, tid: u64) -> Option<Thread> {
+    pub fn remove_thread(&mut self, tid: u64) -> Result<Option<Thread>> {
         // Log thread removal
         if let Some(thread) = self.threads.get(&tid) {
             info!("Thread {} removed{}", tid,
@@ -473,7 +474,7 @@ impl ThreadManager {
             self.current_thread = self.threads.keys().next().copied();
         }
         
-        thread
+        Ok(thread)
     }
     
     /// Get a reference to a thread by ID
@@ -508,7 +509,7 @@ impl ThreadManager {
     }
     
     /// Set the current thread
-    pub fn set_current_thread(&mut self, tid: u64) -> bool {
+    pub fn set_current_thread(&mut self, tid: u64) -> Result<bool> {
         if self.threads.contains_key(&tid) {
             let old_thread = self.current_thread;
             self.current_thread = Some(tid);
@@ -518,25 +519,25 @@ impl ThreadManager {
                 debug!("Current thread changed from {:?} to {}", old_thread, tid);
             }
             
-            true
+            Ok(true)
         } else {
             warn!("Attempted to set current thread to non-existent thread {}", tid);
-            false
+            Ok(false)
         }
     }
     
     /// Update the state of a thread
-    pub fn update_thread_state(&mut self, tid: u64, state: ThreadState) -> bool {
+    pub fn update_thread_state(&mut self, tid: u64, state: ThreadState) -> Result<bool> {
         if let Some(thread) = self.threads.get_mut(&tid) {
             thread.set_state(state);
-            true
+            Ok(true)
         } else {
-            false
+            Ok(false)
         }
     }
     
     /// Update the list of threads
-    pub fn update_threads(&mut self, tids: Vec<u64>) {
+    pub fn update_threads(&mut self, tids: Vec<u64>) -> Result<()> {
         // Make a list of threads to remove (not in the new list)
         let threads_to_remove: Vec<_> = self.threads.keys()
             .filter(|&&tid| !tids.contains(&tid))
@@ -545,16 +546,18 @@ impl ThreadManager {
         
         // Remove threads that are no longer running
         for tid in threads_to_remove {
-            self.remove_thread(tid);
+            self.remove_thread(tid)?;
         }
         
         // Add new threads
         for tid in tids {
             if !self.threads.contains_key(&tid) {
                 let thread = Thread::new(tid, None, false);
-                self.add_thread(thread);
+                self.add_thread(thread)?;
             }
         }
+        
+        Ok(())
     }
     
     /// Get threads in the given state
@@ -585,36 +588,36 @@ impl ThreadManager {
     }
     
     /// Resume a specific thread
-    pub fn resume_thread(&mut self, tid: u64) -> bool {
+    pub fn resume_thread(&mut self, tid: u64) -> Result<bool> {
         if let Some(thread) = self.threads.get_mut(&tid) {
             if thread.state() == ThreadState::Suspended || thread.state().is_stopped() {
                 thread.set_state(ThreadState::Running);
                 thread.add_event("Resumed by debugger".to_string());
-                true
+                Ok(true)
             } else {
                 // Thread is not suspended
-                false
+                Ok(false)
             }
         } else {
             // Thread not found
-            false
+            Ok(false)
         }
     }
     
     /// Suspend a specific thread
-    pub fn suspend_thread(&mut self, tid: u64) -> bool {
+    pub fn suspend_thread(&mut self, tid: u64) -> Result<bool> {
         if let Some(thread) = self.threads.get_mut(&tid) {
             if thread.state().is_running() {
                 thread.set_state(ThreadState::Suspended);
                 thread.add_event("Suspended by debugger".to_string());
-                true
+                Ok(true)
             } else {
                 // Thread is already suspended or stopped
-                false
+                Ok(false)
             }
         } else {
             // Thread not found
-            false
+            Ok(false)
         }
     }
     
@@ -649,12 +652,12 @@ impl ThreadManager {
     }
     
     /// Update a thread's call stack
-    pub fn update_call_stack(&mut self, tid: u64, call_stack: Vec<StackFrame>) -> bool {
+    pub fn update_call_stack(&mut self, tid: u64, call_stack: Vec<StackFrame>) -> Result<bool> {
         if let Some(thread) = self.threads.get_mut(&tid) {
             thread.set_call_stack(call_stack);
-            true
+            Ok(true)
         } else {
-            false
+            Ok(false)
         }
     }
     

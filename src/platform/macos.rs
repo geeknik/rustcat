@@ -69,7 +69,7 @@ pub const ARM_NEON_STATE64_COUNT: u32 = 66; // 33 128-bit registers (q0-q31) + f
 /// MacOS-specific debugger implementation
 pub struct MacosDebugger {
     /// The task port for the target process
-    task_port: Option<task_t>,
+    _task_port: Option<task_t>,
     /// The child process handle (if launched by us)
     child: Option<Child>,
     /// Thread list cache
@@ -81,7 +81,7 @@ impl MacosDebugger {
     pub fn new() -> Self {
         info!("Initializing MacOS debugger");
         Self {
-            task_port: None,
+            _task_port: None,
             child: None,
             threads: Vec::new(),
         }
@@ -152,7 +152,7 @@ impl MacosDebugger {
         }
         
         debug!("Successfully obtained task port 0x{:x} for process {}", task_port, pid);
-        self.task_port = Some(task_port);
+        self._task_port = Some(task_port);
         
         // Refresh the thread list
         self.refresh_threads()?;
@@ -176,7 +176,7 @@ impl MacosDebugger {
         }
         
         // Clear internal state
-        self.task_port = None;
+        self._task_port = None;
         self.threads.clear();
         
         debug!("Successfully detached from process {}", pid);
@@ -185,7 +185,7 @@ impl MacosDebugger {
     
     /// Continue execution of a process
     pub fn continue_execution(&mut self, pid: i32) -> Result<()> {
-        if self.task_port.is_none() {
+        if self._task_port.is_none() {
             return Err(anyhow!("Not attached to any process"));
         }
         
@@ -201,7 +201,7 @@ impl MacosDebugger {
         }
         
         // Additionally, ensure all threads are resumed at the Mach level
-        let task_port = self.task_port.unwrap();
+        let task_port = self._task_port.unwrap();
         let kr = unsafe { task_resume(task_port) };
         if kr != KERN_SUCCESS {
             warn!("Failed to resume task at Mach level: {}", kr);
@@ -215,7 +215,7 @@ impl MacosDebugger {
     
     /// Set a breakpoint at the specified address
     pub fn set_breakpoint(&mut self, pid: i32, address: u64) -> Result<u8> {
-        if self.task_port.is_none() {
+        if self._task_port.is_none() {
             return Err(anyhow!("Not attached to any process"));
         }
         
@@ -235,7 +235,7 @@ impl MacosDebugger {
     
     /// Remove a breakpoint at the specified address
     pub fn remove_breakpoint(&mut self, pid: i32, address: u64, original_byte: u8) -> Result<()> {
-        if self.task_port.is_none() {
+        if self._task_port.is_none() {
             return Err(anyhow!("Not attached to any process"));
         }
         
@@ -250,7 +250,7 @@ impl MacosDebugger {
     
     /// Get the register values for the specified thread
     pub fn get_registers(&self, pid: i32) -> Result<Registers> {
-        if self.task_port.is_none() {
+        if self._task_port.is_none() {
             return Err(anyhow!("Not attached to any process"));
         }
         
@@ -311,7 +311,7 @@ impl MacosDebugger {
     
     /// Set the registers for the specified thread
     pub fn set_registers(&self, pid: i32, registers: &Registers) -> Result<()> {
-        if self.task_port.is_none() {
+        if self._task_port.is_none() {
             return Err(anyhow!("Not attached to any process"));
         }
         
@@ -394,7 +394,7 @@ impl MacosDebugger {
     
     /// Read memory from the target process
     pub fn read_memory(&self, pid: i32, address: u64, size: usize) -> Result<Vec<u8>> {
-        if self.task_port.is_none() {
+        if self._task_port.is_none() {
             return Err(anyhow!("Not attached to any process"));
         }
         
@@ -408,7 +408,7 @@ impl MacosDebugger {
     
     /// Helper function to read memory using mach_vm_read_overwrite
     fn read_memory_raw(&self, address: u64, buffer: &mut [u8]) -> Result<()> {
-        if let Some(task_port) = self.task_port {
+        if let Some(_task_port) = self._task_port {
             debug!("Reading memory at address 0x{:x}, size: {} bytes", address, buffer.len());
             
             // Initialize the actual bytes read count
@@ -417,7 +417,7 @@ impl MacosDebugger {
             // Use mach_vm_read_overwrite to read memory from the target process
             let kr = unsafe {
                 mach_vm_read_overwrite(
-                    task_port,
+                    _task_port,
                     address as mach_vm_address_t,
                     buffer.len() as mach_vm_size_t,
                     buffer.as_mut_ptr() as mach_vm_address_t,
@@ -447,7 +447,7 @@ impl MacosDebugger {
     
     /// Write memory to the target process
     pub fn write_memory(&self, pid: i32, address: u64, data: &[u8]) -> Result<()> {
-        if self.task_port.is_none() {
+        if self._task_port.is_none() {
             return Err(anyhow!("Not attached to any process"));
         }
         
@@ -460,13 +460,13 @@ impl MacosDebugger {
     
     /// Helper function to write memory using mach_vm_write
     fn write_memory_raw(&self, address: u64, data: &[u8]) -> Result<()> {
-        if let Some(task_port) = self.task_port {
+        if let Some(_task_port) = self._task_port {
             debug!("Writing {} bytes to address 0x{:x}", data.len(), address);
             
             // Use mach_vm_write to write memory to the target process
             let kr = unsafe {
                 mach_vm_write(
-                    task_port,
+                    _task_port,
                     address as mach_vm_address_t,
                     data.as_ptr() as usize,
                     data.len() as mach_msg_type_number_t
@@ -488,7 +488,7 @@ impl MacosDebugger {
     
     /// Step a single instruction
     pub fn step(&mut self, pid: i32) -> Result<()> {
-        if self.task_port.is_none() {
+        if self._task_port.is_none() {
             return Err(anyhow!("Not attached to any process"));
         }
         
@@ -519,7 +519,7 @@ impl MacosDebugger {
         }
         
         // If we're attached, detach first
-        if self.task_port.is_some() {
+        if self._task_port.is_some() {
             let _ = self.detach(pid);
         }
         
@@ -528,7 +528,7 @@ impl MacosDebugger {
     
     /// Refresh the list of threads in the target process
     fn refresh_threads(&mut self) -> Result<()> {
-        if let Some(task_port) = self.task_port {
+        if let Some(_task_port) = self._task_port {
             // Clear existing threads
             self.threads.clear();
             
@@ -539,7 +539,7 @@ impl MacosDebugger {
             // Get the list of threads using task_threads API
             let kr = unsafe {
                 task_threads(
-                    task_port,
+                    _task_port,
                     &mut thread_list,
                     &mut thread_count
                 )
@@ -587,12 +587,12 @@ impl MacosDebugger {
     
     /// Suspend all threads
     fn suspend_all_threads(&self) -> Result<()> {
-        if let Some(task_port) = self.task_port {
+        if let Some(_task_port) = self._task_port {
             // In a real implementation, we could either suspend the entire task
             // or suspend each thread individually
             
             // Suspend the task
-            let kr = unsafe { task_suspend(task_port) };
+            let kr = unsafe { task_suspend(_task_port) };
             if kr != KERN_SUCCESS {
                 return Err(anyhow!("Failed to suspend task: {}", kr));
             }
@@ -623,8 +623,8 @@ impl MacosDebugger {
     }
     
     /// Get memory protection for an address
-    fn get_memory_protection(&self, address: u64) -> Result<u32> {
-        if let Some(task_port) = self.task_port {
+    fn get_memory_protection(&self, _address: u64) -> Result<u32> {
+        if let Some(_task_port) = self._task_port {
             // In a real implementation, we would use mach_vm_region to get memory protection
             // For this implementation, we'll just return a default
             
@@ -637,14 +637,14 @@ impl MacosDebugger {
     
     /// Set memory protection for an address range
     fn set_memory_protection(&self, address: u64, size: usize, protection: u32) -> Result<()> {
-        if let Some(task_port) = self.task_port {
+        if let Some(_task_port) = self._task_port {
             debug!("Setting memory protection 0x{:x} for address 0x{:x} ({} bytes)", 
                 protection, address, size);
             
             // Call mach_vm_protect to set the memory protection
             let kr = unsafe {
                 mach_vm_protect(
-                    task_port,
+                    _task_port,
                     address as mach_vm_address_t,
                     size as mach_vm_size_t,
                     0, // set_maximum (false)
@@ -669,7 +669,7 @@ impl MacosDebugger {
     
     /// Wait for the process to stop (e.g., at a breakpoint or after a step)
     pub fn wait_for_stop(&self, pid: i32, timeout_ms: u64) -> Result<()> {
-        if self.task_port.is_none() {
+        if self._task_port.is_none() {
             return Err(anyhow!("Not attached to any process"));
         }
         

@@ -7,8 +7,8 @@ use std::time::Duration;
 use anyhow::{anyhow, Result};
 use log::{info, warn, debug, error};
 
-use crate::debugger::breakpoint::{Breakpoint, BreakpointManager, BreakpointType, ConditionEvaluator};
-use crate::debugger::memory::{MemoryMap, MemoryFormat};
+use crate::debugger::breakpoint::{Breakpoint, BreakpointManager, ConditionEvaluator};
+use crate::debugger::memory::{MemoryMap};
 use crate::debugger::registers::{Registers, Register};
 use crate::debugger::symbols::SymbolTable;
 use crate::debugger::threads::{ThreadManager, ThreadState, StackFrame};
@@ -476,7 +476,7 @@ impl Debugger {
             let bp_addr = self.current_breakpoint.take();
             
             // Get current instruction for analysis
-            let current_instruction = if let Ok(current_pc) = self.get_registers().map(|r| r.get(Register::PC).unwrap_or(0)) {
+            let current_instruction = if let Ok(current_pc) = self.get_registers().map(|r| r.get(Register::PC).unwrap_or_default()) {
                 self.disassemble(current_pc, 1).ok().and_then(|ins| ins.first().cloned())
             } else {
                 None
@@ -515,7 +515,7 @@ impl Debugger {
                     let target_addr = instruction.branch_target.unwrap_or_else(|| {
                         // For indirect calls, we need to look at the current PC
                         if let Ok(registers) = self.get_registers() {
-                            registers.get(Register::PC).unwrap_or(0)
+                            registers.get(Register::PC).unwrap_or_default()
                         } else {
                             0
                         }
@@ -574,7 +574,7 @@ impl Debugger {
                 
                 // Check if the step caused a function call or return
                 if let Ok(registers) = self.get_registers() {
-                    let current_pc = registers.get(Register::PC).unwrap_or(0);
+                    let _current_pc = registers.get(Register::PC).unwrap_or_default();
                     // Disassemble the instruction we just executed
                     if let Ok(instructions) = self.disassemble(addr, 1) {
                         if let Some(instruction) = instructions.first() {
@@ -883,8 +883,8 @@ impl Debugger {
     
     /// Resume a specific thread
     pub fn resume_thread(&mut self, tid: u64) -> Result<()> {
-        if let Some(pid) = self.pid {
-            if self.thread_manager.resume_thread(tid) {
+        if let Some(_pid) = self.pid {
+            if self.thread_manager.resume_thread(tid)? {
                 // Note: in a real implementation, the platform would have a resume_thread function
                 // For now, we'll just log the operation
                 info!("Resumed thread {}", tid);
@@ -899,8 +899,8 @@ impl Debugger {
     
     /// Suspend a specific thread
     pub fn suspend_thread(&mut self, tid: u64) -> Result<()> {
-        if let Some(pid) = self.pid {
-            if self.thread_manager.suspend_thread(tid) {
+        if let Some(_pid) = self.pid {
+            if self.thread_manager.suspend_thread(tid)? {
                 // Note: in a real implementation, the platform would have a suspend_thread function
                 // For now, we'll just log the operation
                 info!("Suspended thread {}", tid);
@@ -933,9 +933,9 @@ impl Debugger {
 
     /// Disassemble instructions at a specific address
     pub fn disassemble(&self, address: u64, count: usize) -> Result<Vec<Instruction>> {
-        if let Some(pid) = self.pid {
+        if let Some(_pid) = self.pid {
             // Disassemble using our disassembler
-            let mut instructions = self.disassembler.disassemble(address, count)?;
+            let instructions = self.disassembler.disassemble(address, count)?;
             
             // Check if any of these addresses have breakpoints
             let result = instructions.into_iter().map(|mut ins| {

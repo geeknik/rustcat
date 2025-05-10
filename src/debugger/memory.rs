@@ -2,9 +2,8 @@ use std::collections::HashMap;
 use std::fmt;
 use std::ops::Range;
 
-use anyhow::{anyhow, Result};
-use log::{debug, info};
-use byteorder::{ByteOrder, LittleEndian, BigEndian};
+use log::{info};
+use byteorder::{ByteOrder, LittleEndian};
 
 /// Memory protection flags
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

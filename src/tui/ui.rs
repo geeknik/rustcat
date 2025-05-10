@@ -12,7 +12,6 @@ use std::sync::mpsc;
 
 use crate::tui::app::{App, View, ActiveBlock, LogFilter};
 use crate::tui::views::{CodeView, CommandView, draw_memory_view, draw_thread_view, draw_call_stack_view, draw_registers_view, draw_trace_view, VariablesView};
-use crate::debugger::memory::MemoryFormat;
 
 /// Set up log capturing for UI display
 pub fn setup_log_capture() -> mpsc::Receiver<String> {

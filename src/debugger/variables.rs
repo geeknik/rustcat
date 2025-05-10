@@ -438,7 +438,7 @@ impl VariableManager {
     }
 
     /// Update local variables based on the current stack frame
-    pub fn update_locals(&mut self, pid: i32, frame_index: usize) -> Result<()> {
+    pub fn update_locals(&mut self, _pid: i32, frame_index: usize) -> Result<()> {
         // In a real implementation, this would:
         // 1. Use DWARF debug info to find local variables in this stack frame
         // 2. Read their values from memory or registers
@@ -494,7 +494,7 @@ impl VariableManager {
             let inner_value = self.evaluate_expression(inner_expr, pid)?;
             
             // Convert the value to an address
-            let address = match inner_value {
+            let _address = match inner_value {
                 VariableValue::UInteger(addr) => addr,
                 VariableValue::Integer(addr) if addr >= 0 => addr as u64,
                 VariableValue::Pointer(addr) => addr,
@@ -615,7 +615,7 @@ impl VariableManager {
                 let addr_value = self.evaluate_expression(addr_expr, pid)?;
                 
                 // Convert to address
-                let addr = match addr_value {
+                let _addr = match addr_value {
                     VariableValue::UInteger(a) => a,
                     VariableValue::Integer(a) if a >= 0 => a as u64,
                     VariableValue::Pointer(a) => a,
@@ -690,7 +690,7 @@ impl VariableManager {
                                     Ok(VariableValue::Integer(a % b))
                                 }
                             },
-                            _ => unreachable!(),
+                            _ => Err(anyhow!("Unsupported operation '{}' for integer types", c)),
                         }
                     },
                     (VariableValue::UInteger(a), VariableValue::UInteger(b)) => {
@@ -712,7 +712,7 @@ impl VariableManager {
                                     Ok(VariableValue::UInteger(a % b))
                                 }
                             },
-                            _ => unreachable!(),
+                            _ => Err(anyhow!("Unsupported operation '{}' for unsigned integer types", c)),
                         }
                     },
                     (VariableValue::Float(a), VariableValue::Float(b)) => {
@@ -728,7 +728,7 @@ impl VariableManager {
                                 }
                             },
                             '%' => Err(anyhow!("Modulo not supported for floating-point values")),
-                            _ => unreachable!(),
+                            _ => Err(anyhow!("Unsupported operation '{}' for floating-point types", c)),
                         }
                     },
                     // Handle mixed type operations with appropriate conversions
@@ -759,7 +759,7 @@ impl VariableManager {
                                     Ok(VariableValue::Integer(a % b as i64))
                                 }
                             },
-                            _ => unreachable!(),
+                            _ => Err(anyhow!("Unsupported operation '{}' for mixed types", c)),
                         }
                     },
                     // Add other combinations as needed
@@ -780,7 +780,7 @@ impl VariableManager {
     }
 
     /// Look up variable information from debug symbols
-    fn lookup_variable_info(&self, name: &str, address: u64) -> Option<(VariableType, String)> {
+    fn lookup_variable_info(&self, name: &str, _address: u64) -> Option<(VariableType, String)> {
         // In a real implementation, this would:
         // 1. Use DWARF debug info to find information about the variable
         // 2. Return the type and other metadata
