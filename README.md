@@ -41,6 +41,7 @@ This is the debugger macOS should ship with, but doesn't. So we did it ourselves
 ## 🖥 Interface
 
 Terminal-Only UI with vi-like keyboard shortcuts:
+
 - Split Panels: Code view | Stack trace | Memory | Threads
 - Dynamic Layout: Resizable panes, toggleable regions
 - Keyboard-Driven: g (go), s (step), f (stack frame), / (search), : (command mode)
@@ -102,6 +103,7 @@ cargo run -- /path/to/program
 ## Command Mode
 
 Enter command mode with `:` and type commands like:
+
 - `break main` - Set breakpoint at main function
 - `break 0x1000` - Set breakpoint at memory address
 - `continue` - Continue execution

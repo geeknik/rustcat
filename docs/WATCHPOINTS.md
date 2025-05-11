@@ -36,11 +36,13 @@ wwatch <address>          # Set a write watchpoint
 ```
 
 The address can be:
+
 - A hexadecimal memory address (e.g., `0x1000`)
 - A variable name (e.g., `counter`)
 - An expression that evaluates to an address (e.g., `&counter`)
 
 Examples:
+
 ```
 watch 0x1000               # Watch 8 bytes at address 0x1000 for reads and writes
 rwatch ptr                 # Watch the 'ptr' variable for reads
@@ -50,6 +52,7 @@ wwatch *ptr                # Watch the value pointed to by 'ptr' for writes
 ### UI Interaction
 
 You can also set watchpoints through the memory view UI:
+
 1. Navigate to the memory view (press `m`)
 2. Locate the address you want to watch
 3. Right-click on the address to open the context menu
@@ -73,6 +76,7 @@ watchlist                  # Display all active watchpoints
 ## Visual Indication
 
 In the memory view, addresses covered by watchpoints are highlighted:
+
 - **Blue**: Read watchpoints
 - **Red**: Write watchpoints
 - **Magenta**: Read/Write watchpoints
@@ -84,6 +88,7 @@ This highlighting makes it easy to identify which memory areas are being monitor
 The `examples/watchpoint_demo.c` program demonstrates a simple use case for watchpoints.
 
 1. Compile and run the demo:
+
    ```
    cd examples
    gcc -g watchpoint_demo.c -o watchpoint_demo
@@ -112,10 +117,12 @@ The `examples/watchpoint_demo.c` program demonstrates a simple use case for watc
 ## Implementation Details
 
 RUSTCAT implements watchpoints using ARM64 debug registers on Apple Silicon:
+
 - DBGWVR (Watchpoint Value Registers): Store the address to monitor
 - DBGWCR (Watchpoint Control Registers): Configure the watchpoint behavior
 
 The watchpoint configuration includes:
+
 - Address to monitor
 - Access type (read, write, or both)
 - Size of the memory region (1, 2, 4, or 8 bytes)
@@ -143,4 +150,4 @@ If watchpoints aren't behaving as expected:
 1. Verify the exact address you're monitoring (use the `info` command on variables)
 2. Check if you're using the right watchpoint type for your scenario
 3. Remember that only 4 watchpoints can be active at once
-4. Ensure the size of the watched region covers the entire variable 
+4. Ensure the size of the watched region covers the entire variable
