@@ -1,3 +1,5 @@
+#![allow(clippy::pub_underscore_fields)]
+
 #[cfg(target_os = "macos")]
 pub mod macos;
 pub mod dwarf;

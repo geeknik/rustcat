@@ -31,12 +31,12 @@ impl BreakpointType {
     /// Convert to string representation
     pub fn as_str(&self) -> &'static str {
         match self {
-            BreakpointType::Execution => "execution",
-            BreakpointType::Hardware => "hardware",
-            BreakpointType::Watchpoint => "watchpoint",
-            BreakpointType::OneShot => "one-shot",
-            BreakpointType::Conditional => "conditional",
-            BreakpointType::Logging => "logging",
+            Self::Execution => "execution",
+            Self::Hardware => "hardware",
+            Self::Watchpoint => "watchpoint",
+            Self::OneShot => "one-shot",
+            Self::Conditional => "conditional",
+            Self::Logging => "logging",
         }
     }
 }

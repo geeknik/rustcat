@@ -11,7 +11,7 @@
 #![allow(clippy::significant_drop_tightening)]
 #![allow(clippy::cognitive_complexity)]
 #![allow(clippy::unnecessary_wraps)]
-#![allow(clippy::match_on_vec_items)]
+#![allow(clippy::indexing_slicing)]
 #![allow(clippy::manual_let_else)]
 #![allow(clippy::match_same_arms)]
 #![allow(clippy::used_underscore_binding)]
@@ -22,6 +22,13 @@
 #![allow(clippy::equatable_if_let)]
 #![allow(clippy::must_use_candidate)]
 #![allow(clippy::missing_const_for_fn)]
+#![allow(clippy::pub_underscore_fields)]
+#![allow(clippy::cast_possible_truncation)]
+#![allow(clippy::cast_possible_wrap)]
+#![allow(clippy::missing_panics_doc)]
+#![allow(clippy::cast_precision_loss)]
+#![allow(clippy::return_self_not_must_use)]
+#![allow(clippy::collection_is_never_read)]
 
 //! RUSTCAT - MacOS-only, Rust-based, fast-as-hell native debugger
 //!

@@ -33,31 +33,31 @@ impl ThreadState {
     pub fn is_stopped(&self) -> bool {
         matches!(
             self,
-            ThreadState::Stopped | ThreadState::AtBreakpoint | ThreadState::SignalStop(_) | ThreadState::Suspended
+            Self::Stopped | Self::AtBreakpoint | Self::SignalStop(_) | Self::Suspended
         )
     }
     
     /// Check if the thread is running
     pub fn is_running(&self) -> bool {
-        matches!(self, ThreadState::Running)
+        matches!(self, Self::Running)
     }
     
     /// Check if the thread has exited
     pub fn is_exited(&self) -> bool {
-        matches!(self, ThreadState::Exited(_))
+        matches!(self, Self::Exited(_))
     }
     
     /// Get a human-readable description of the state
     pub fn description(&self) -> String {
         match self {
-            ThreadState::Running => "running".to_string(),
-            ThreadState::Stopped => "stopped".to_string(),
-            ThreadState::AtBreakpoint => "at breakpoint".to_string(),
-            ThreadState::SignalStop(signal) => format!("signal stop ({})", signal),
-            ThreadState::Suspended => "suspended".to_string(),
-            ThreadState::Waiting => "waiting".to_string(),
-            ThreadState::Blocked => "blocked".to_string(),
-            ThreadState::Exited(code) => format!("exited ({})", code),
+            Self::Running => "running".to_string(),
+            Self::Stopped => "stopped".to_string(),
+            Self::AtBreakpoint => "at breakpoint".to_string(),
+            Self::SignalStop(signal) => format!("signal stop ({})", signal),
+            Self::Suspended => "suspended".to_string(),
+            Self::Waiting => "waiting".to_string(),
+            Self::Blocked => "blocked".to_string(),
+            Self::Exited(code) => format!("exited ({})", code),
         }
     }
 }
@@ -440,11 +440,11 @@ impl ThreadManager {
         // Record thread creation
         let creation_info = ThreadCreationInfo {
             tid,
-            name: thread.name().map(|s| s.to_string()),
+            name: thread.name().map(std::string::ToString::to_string),
             parent_tid: None, // Not known yet
             time: Instant::now(),
-            stack_pointer: thread.registers().and_then(|r| r.get_stack_pointer()),
-            instruction_pointer: thread.registers().and_then(|r| r.get_program_counter()),
+            stack_pointer: thread.registers().and_then(super::registers::Registers::get_stack_pointer),
+            instruction_pointer: thread.registers().and_then(super::registers::Registers::get_program_counter),
         };
         self.creation_history.push(creation_info);
         

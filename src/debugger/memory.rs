@@ -34,10 +34,10 @@ impl Protection {
     pub fn can_read(&self) -> bool {
         matches!(
             self,
-            Protection::Read
-                | Protection::ReadWrite
-                | Protection::ReadExecute
-                | Protection::ReadWriteExecute
+            Self::Read
+                | Self::ReadWrite
+                | Self::ReadExecute
+                | Self::ReadWriteExecute
         )
     }
 
@@ -45,10 +45,10 @@ impl Protection {
     pub fn can_write(&self) -> bool {
         matches!(
             self,
-            Protection::Write
-                | Protection::ReadWrite
-                | Protection::WriteExecute
-                | Protection::ReadWriteExecute
+            Self::Write
+                | Self::ReadWrite
+                | Self::WriteExecute
+                | Self::ReadWriteExecute
         )
     }
 
@@ -56,24 +56,24 @@ impl Protection {
     pub fn can_execute(&self) -> bool {
         matches!(
             self,
-            Protection::Execute
-                | Protection::ReadExecute
-                | Protection::WriteExecute
-                | Protection::ReadWriteExecute
+            Self::Execute
+                | Self::ReadExecute
+                | Self::WriteExecute
+                | Self::ReadWriteExecute
         )
     }
 
     /// Get a human-readable string representation
     pub fn as_str(&self) -> &'static str {
         match self {
-            Protection::Read => "r--",
-            Protection::Write => "-w-",
-            Protection::Execute => "--x",
-            Protection::ReadWrite => "rw-",
-            Protection::ReadExecute => "r-x",
-            Protection::WriteExecute => "-wx",
-            Protection::ReadWriteExecute => "rwx",
-            Protection::None => "---",
+            Self::Read => "r--",
+            Self::Write => "-w-",
+            Self::Execute => "--x",
+            Self::ReadWrite => "rw-",
+            Self::ReadExecute => "r-x",
+            Self::WriteExecute => "-wx",
+            Self::ReadWriteExecute => "rwx",
+            Self::None => "---",
         }
     }
 }
@@ -189,7 +189,7 @@ impl MemoryMap {
         // Get the task port for the target process
         let mut task: mach_port_t = 0;
         unsafe {
-            let kr = task_for_pid(mach_task_self(), pid, &mut task);
+            let kr = task_for_pid(mach_task_self(), pid, &raw mut task);
             if kr != KERN_SUCCESS {
                 return Err(std::io::Error::new(
                     std::io::ErrorKind::PermissionDenied,
@@ -211,12 +211,12 @@ impl MemoryMap {
             let kr = unsafe {
                 mach_vm_region(
                     task,
-                    &mut address,
-                    &mut size,
+                    &raw mut address,
+                    &raw mut size,
                     VM_REGION_BASIC_INFO_64,
-                    (&mut info as *mut _) as *mut _,
-                    &mut count,
-                    &mut object_name
+                    (&raw mut info).cast(),
+                    &raw mut count,
+                    &raw mut object_name
                 )
             };
             
@@ -557,42 +557,42 @@ pub enum MemoryFormat {
 
 impl MemoryFormat {
     /// Get all available memory formats
-    pub fn all() -> Vec<MemoryFormat> {
+    pub fn all() -> Vec<Self> {
         vec![
-            MemoryFormat::Hex,
-            MemoryFormat::Ascii,
-            MemoryFormat::Utf8,
-            MemoryFormat::Disassembly,
-            MemoryFormat::U8,
-            MemoryFormat::U16,
-            MemoryFormat::U32,
-            MemoryFormat::U64,
-            MemoryFormat::I8,
-            MemoryFormat::I16,
-            MemoryFormat::I32,
-            MemoryFormat::I64,
-            MemoryFormat::F32,
-            MemoryFormat::F64,
+            Self::Hex,
+            Self::Ascii,
+            Self::Utf8,
+            Self::Disassembly,
+            Self::U8,
+            Self::U16,
+            Self::U32,
+            Self::U64,
+            Self::I8,
+            Self::I16,
+            Self::I32,
+            Self::I64,
+            Self::F32,
+            Self::F64,
         ]
     }
     
     /// Convert to string representation
     pub fn as_str(&self) -> &'static str {
         match self {
-            MemoryFormat::Hex => "Hex",
-            MemoryFormat::Ascii => "ASCII",
-            MemoryFormat::Utf8 => "UTF-8",
-            MemoryFormat::Disassembly => "Disassembly",
-            MemoryFormat::U8 => "u8",
-            MemoryFormat::U16 => "u16",
-            MemoryFormat::U32 => "u32",
-            MemoryFormat::U64 => "u64",
-            MemoryFormat::I8 => "i8",
-            MemoryFormat::I16 => "i16",
-            MemoryFormat::I32 => "i32",
-            MemoryFormat::I64 => "i64",
-            MemoryFormat::F32 => "f32",
-            MemoryFormat::F64 => "f64",
+            Self::Hex => "Hex",
+            Self::Ascii => "ASCII",
+            Self::Utf8 => "UTF-8",
+            Self::Disassembly => "Disassembly",
+            Self::U8 => "u8",
+            Self::U16 => "u16",
+            Self::U32 => "u32",
+            Self::U64 => "u64",
+            Self::I8 => "i8",
+            Self::I16 => "i16",
+            Self::I32 => "i32",
+            Self::I64 => "i64",
+            Self::F32 => "f32",
+            Self::F64 => "f64",
         }
     }
 }

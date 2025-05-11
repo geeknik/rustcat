@@ -29,13 +29,13 @@ impl SymbolType {
     /// Convert to string representation
     pub fn as_str(&self) -> &'static str {
         match self {
-            SymbolType::Function => "Function",
-            SymbolType::GlobalVariable => "Global Variable",
-            SymbolType::StaticVariable => "Static Variable",
-            SymbolType::Text => "Text Section",
-            SymbolType::Data => "Data Section",
-            SymbolType::Debug => "Debug Symbol",
-            SymbolType::Other => "Other",
+            Self::Function => "Function",
+            Self::GlobalVariable => "Global Variable",
+            Self::StaticVariable => "Static Variable",
+            Self::Text => "Text Section",
+            Self::Data => "Data Section",
+            Self::Debug => "Debug Symbol",
+            Self::Other => "Other",
         }
     }
 }
@@ -233,7 +233,7 @@ impl SymbolTable {
                 // self.load_pe_symbols(&pe)?;
             },
             _ => return Err(anyhow!("Unsupported binary format")),
-        };
+        }
         
         self.loading_progress = Some(1.0);
         self.loading_status = format!("Loaded {} symbols", self.by_address.len());
@@ -330,7 +330,7 @@ impl SymbolTable {
                 }
                 
                 if i % 1000 == 0 {
-                    self.loading_progress = Some(0.2 + 0.7 * (i as f32 / total as f32));
+                    self.loading_progress = Some(0.7f32.mul_add(i as f32 / total as f32, 0.2));
                     self.loading_status = format!("Loaded {}/{} symbols", i, total);
                 }
             }
@@ -338,7 +338,7 @@ impl SymbolTable {
         
         // Load code sections and function starts
         // Handle the Result from segment.name() properly
-        for segment in macho.segments.iter() {
+        for segment in &macho.segments {
             if let Ok(name) = segment.name() {
                 if name.starts_with("__TEXT") {
                     // Using simplified section handling compatible with goblin 0.7.1
@@ -354,9 +354,7 @@ impl SymbolTable {
         // Note: goblin 0.7.1 doesn't expose function_starts directly
         // We'll handle this differently by detecting functions from symbols
         let text_base = macho.segments
-            .iter()
-            .filter_map(|s| s.name().ok().filter(|n| n.starts_with("__TEXT")).map(|_| s.vmaddr))
-            .next()
+            .iter().find_map(|s| s.name().ok().filter(|n| n.starts_with("__TEXT")).map(|_| s.vmaddr))
             .unwrap_or(0);
             
         // Function detection is now primarily done through the symbol table
@@ -392,7 +390,7 @@ impl SymbolTable {
             }
             
             if i % 1000 == 0 && !function_starts.is_empty() {
-                self.loading_progress = Some(0.9 + 0.1 * (i as f32 / function_starts.len() as f32));
+                self.loading_progress = Some(0.1f32.mul_add(i as f32 / function_starts.len() as f32, 0.9));
                 self.loading_status = format!("Processing function starts {}/{}", i, function_starts.len());
             }
         }
@@ -454,7 +452,7 @@ impl SymbolTable {
             }
             
             if i % 1000 == 0 {
-                self.loading_progress = Some(0.2 + 0.7 * (i as f32 / total as f32));
+                self.loading_progress = Some(0.7f32.mul_add(i as f32 / total as f32, 0.2));
                 self.loading_status = format!("Loaded {}/{} symbols", i, total);
             }
         }
@@ -507,7 +505,7 @@ impl SymbolTable {
             }
             
             if i % 1000 == 0 {
-                self.loading_progress = Some(0.9 + 0.1 * (i as f32 / total_dynsyms as f32));
+                self.loading_progress = Some(0.1f32.mul_add(i as f32 / total_dynsyms as f32, 0.9));
                 self.loading_status = format!("Loaded {}/{} dynamic symbols", i, total_dynsyms);
             }
         }
@@ -545,7 +543,7 @@ impl SymbolTable {
         }
         
         // Try range-based lookup
-        for (_, symbol) in self.by_address.iter() {
+        for symbol in self.by_address.values() {
             if let Some(size) = symbol.size {
                 if address >= symbol.address && address < symbol.address + size {
                     return Some(symbol);

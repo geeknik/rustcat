@@ -8,7 +8,7 @@ use anyhow::{anyhow, Result};
 use log::{info, warn, debug, error};
 
 use crate::debugger::breakpoint::{Breakpoint, BreakpointManager, ConditionEvaluator};
-use crate::debugger::memory::{MemoryMap};
+use crate::debugger::memory::MemoryMap;
 use crate::debugger::registers::{Registers, Register};
 use crate::debugger::symbols::SymbolTable;
 use crate::debugger::threads::{ThreadManager, ThreadState, StackFrame};
@@ -20,7 +20,7 @@ use crate::platform::dwarf::DwarfParser;
 use crate::debugger::breakpoint::{Watchpoint, WatchpointManager};
 
 /// Debugger state
-#[derive(Debug, PartialEq, Clone, Copy)]
+#[derive(Debug, PartialEq, Eq, Clone, Copy)]
 pub enum DebuggerState {
     /// Not started
     Idle,
@@ -140,7 +140,7 @@ impl Debugger {
             let mut symbol_table = symbols.lock().unwrap();
             
             match symbol_table.load_from_file(&target_path) {
-                Ok(_) => {
+                Ok(()) => {
                     let elapsed = start.elapsed();
                     info!("Symbols loaded successfully in {:.2?}", elapsed);
                     info!("Loaded {} symbols", symbol_table.get_all_symbols().len());
@@ -189,7 +189,7 @@ impl Debugger {
             // Set up first-chance breakpoint at main if we can find it
             let main_addr = {
                 let symbols = self.symbols.lock().unwrap();
-                symbols.find_by_name("main").map(|sym| sym.address())
+                symbols.find_by_name("main").map(super::symbols::Symbol::address)
             };
             
             if let Some(addr) = main_addr {
@@ -244,9 +244,7 @@ impl Debugger {
                                 // Try to get symbol name from symbol table
                                 let symbol_name = {
                                     let symbols = self.symbols.lock().unwrap();
-                                    symbols.find_by_address(addr)
-                                        .map(|sym| sym.name().to_string())
-                                        .unwrap_or_else(|| format!("0x{:x}", addr))
+                                    symbols.find_by_address(addr).map_or_else(|| format!("0x{:x}", addr), |sym| sym.name().to_string())
                                 };
                                 info!("Hit breakpoint at {}", symbol_name);
                             }
@@ -308,7 +306,7 @@ impl Debugger {
         // Try to find the symbol in the symbol table
         let address = {
             let symbols = self.symbols.lock().unwrap();
-            symbols.find_by_any_name(name).map(|sym| sym.address())
+            symbols.find_by_any_name(name).map(super::symbols::Symbol::address)
         };
         
         if let Some(addr) = address {
@@ -1097,15 +1095,12 @@ impl Debugger {
         };
         
         // Get current thread ID (use first thread if none is current)
-        let thread_id = match self.thread_manager.current_thread_id() {
-            Some(tid) => tid,
-            None => {
-                let threads = self.thread_manager.get_all_threads();
-                if threads.is_empty() {
-                    return Err(anyhow!("No threads available to set watchpoint"));
-                }
-                *threads.iter().next().unwrap().0
+        let thread_id = if let Some(tid) = self.thread_manager.current_thread_id() { tid } else {
+            let threads = self.thread_manager.get_all_threads();
+            if threads.is_empty() {
+                return Err(anyhow!("No threads available to set watchpoint"));
             }
+            *threads.iter().next().unwrap().0
         };
         
         // Create a watchpoint object

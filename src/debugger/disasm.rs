@@ -175,7 +175,7 @@ impl Disassembler {
             let offset = ((imm26 << 6) as i32) >> 6;
             
             // Calculate target address: PC + (offset * 4)
-            let target = (address as i64 + (offset as i64 * 4)) as u64;
+            let target = (address as i64 + (i64::from(offset) * 4)) as u64;
             
             let instr = Instruction::new(
                 address,
@@ -194,7 +194,7 @@ impl Disassembler {
             // Extract and sign-extend the immediate value using the same logic as BL
             let imm26 = opcode & 0x03FF_FFFF;
             let offset = ((imm26 << 6) as i32) >> 6;
-            let target = (address as i64 + (offset as i64 * 4)) as u64;
+            let target = (address as i64 + (i64::from(offset) * 4)) as u64;
             
             let instr = Instruction::new(
                 address,
@@ -210,7 +210,7 @@ impl Disassembler {
         if (opcode & 0xFF00_0000) == 0x5400_0000 {
             // B.cond: bits[23:5] contains signed 19-bit offset (in 4-byte units)
             let offset = ((opcode & 0x00FF_FFE0) << 13) as i32 >> 13;
-            let target = (address as i64 + (offset as i64 * 4)) as u64;
+            let target = (address as i64 + (i64::from(offset) * 4)) as u64;
             
             // Get condition code from bits[3:0]
             let cond = opcode & 0xF;
