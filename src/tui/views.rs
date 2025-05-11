@@ -559,11 +559,11 @@ pub fn draw_thread_view<B: Backend>(
                 
                 // Format PC and SP
                 let pc = thread.registers()
-                    .and_then(|r| r.get_program_counter())
+                    .and_then(super::super::debugger::registers::Registers::get_program_counter)
                     .map_or("N/A".to_string(), |v| format!("0x{:x}", v));
                 
                 let sp = thread.registers()
-                    .and_then(|r| r.get_stack_pointer())
+                    .and_then(super::super::debugger::registers::Registers::get_stack_pointer)
                     .map_or("N/A".to_string(), |v| format!("0x{:x}", v));
                 
                 // Create row style based on thread state
@@ -607,10 +607,10 @@ pub fn draw_thread_view<B: Backend>(
             f.render_widget(table, inner_area);
         } else {
             // No thread manager or no threads
-            let text = if debugger.get_state() != crate::debugger::core::DebuggerState::Running {
-                "No program is running."
-            } else {
+            let text = if debugger.get_state() == crate::debugger::core::DebuggerState::Running {
                 "No thread information available."
+            } else {
+                "No program is running."
             };
             
             let paragraph = Paragraph::new(text)
@@ -684,10 +684,10 @@ pub fn draw_call_stack_view<B: Backend>(
         }
         
         // No thread, call stack, or frames
-        let text = if debugger.get_state() != crate::debugger::core::DebuggerState::Running {
-            "No program is running."
-        } else {
+        let text = if debugger.get_state() == crate::debugger::core::DebuggerState::Running {
             "No call stack information available."
+        } else {
+            "No program is running."
         };
         
         let paragraph = Paragraph::new(text)
@@ -774,7 +774,7 @@ pub fn draw_registers_view<B: Backend>(f: &mut Frame<B>, app: &App, area: Rect) 
             
             let abi_info = match reg.abi_name() {
                 Some(name) => format!("({})", name),
-                None => "".to_string(),
+                None => String::new(),
             };
             
             let style = if registers.is_dirty(reg) {
@@ -998,10 +998,10 @@ impl TraceView {
                 f.render_widget(paragraph, inner_area);
             } else {
                 // No thread manager
-                let text = if debugger.get_state() != crate::debugger::core::DebuggerState::Running {
-                    "No program is running."
-                } else {
+                let text = if debugger.get_state() == crate::debugger::core::DebuggerState::Running {
                     "No thread information available."
+                } else {
+                    "No program is running."
                 };
                 
                 let paragraph = Paragraph::new(text)
@@ -1060,7 +1060,14 @@ pub fn draw_trace_view<B: Backend>(
         // Get trace statistics
         let stats = debugger.get_function_call_stats();
         
-        if !stats.is_empty() {
+        if stats.is_empty() {
+            // No statistics available
+            let paragraph = Paragraph::new("No function call statistics available.")
+                .alignment(Alignment::Center)
+                .style(Style::default().fg(Color::Gray));
+            
+            f.render_widget(paragraph, inner_stats_area);
+        } else {
             // Sort by total time spent
             let mut stats_vec: Vec<_> = stats.into_iter().collect();
             stats_vec.sort_by(|a, b| b.1.1.cmp(&a.1.1));
@@ -1093,13 +1100,6 @@ pub fn draw_trace_view<B: Backend>(
                 ]);
             
             f.render_widget(table, inner_stats_area);
-        } else {
-            // No statistics available
-            let paragraph = Paragraph::new("No function call statistics available.")
-                .alignment(Alignment::Center)
-                .style(Style::default().fg(Color::Gray));
-            
-            f.render_widget(paragraph, inner_stats_area);
         }
     } else {
         // Failed to lock debugger
@@ -1150,7 +1150,29 @@ impl VariablesView {
             let mut items = Vec::new();
             
             // First, show watch expressions if any
-            if !app.watch_expressions.is_empty() {
+            if app.watch_expressions.is_empty() {
+                // No watch expressions - just show variables
+                // Get variables for the current frame
+                let _frame_vars = debugger.get_variables_by_frame(frame_index);
+                
+                if _frame_vars.is_empty() {
+                    items.push(ListItem::new(Line::from(vec![
+                        Span::styled("No variables available in this frame", Style::default().fg(Color::Gray))
+                    ])));
+                } else {
+                    for var in _frame_vars {
+                        // Format the variable for display
+                        let mut line_style = Style::default();
+                        if var.has_changed() {
+                            line_style = line_style.fg(Color::Yellow);
+                        }
+                        
+                        items.push(ListItem::new(Line::from(vec![
+                            Span::styled(var.format(), line_style)
+                        ])));
+                    }
+                }
+            } else {
                 items.push(ListItem::new(Line::from(vec![
                     Span::styled("Watched Expressions", Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD))
                 ])));
@@ -1192,7 +1214,11 @@ impl VariablesView {
                     // Get variables again with the new lock
                     let _frame_vars = debugger.get_variables_by_frame(frame_index);
                     
-                    if !_frame_vars.is_empty() {
+                    if _frame_vars.is_empty() {
+                        items.push(ListItem::new(Line::from(vec![
+                            Span::styled("No local variables in this frame", Style::default().fg(Color::Gray))
+                        ])));
+                    } else {
                         for var in _frame_vars {
                             // Format the variable for display
                             let mut line_style = Style::default();
@@ -1204,37 +1230,11 @@ impl VariablesView {
                                 Span::styled(var.format(), line_style)
                             ])));
                         }
-                    } else {
-                        items.push(ListItem::new(Line::from(vec![
-                            Span::styled("No local variables in this frame", Style::default().fg(Color::Gray))
-                        ])));
                     }
                 } else {
                     // Couldn't reacquire the debugger
                     items.push(ListItem::new(Line::from(vec![
                         Span::styled("Cannot access debugger to show variables", Style::default().fg(Color::Red))
-                    ])));
-                }
-            } else {
-                // No watch expressions - just show variables
-                // Get variables for the current frame
-                let _frame_vars = debugger.get_variables_by_frame(frame_index);
-                
-                if !_frame_vars.is_empty() {
-                    for var in _frame_vars {
-                        // Format the variable for display
-                        let mut line_style = Style::default();
-                        if var.has_changed() {
-                            line_style = line_style.fg(Color::Yellow);
-                        }
-                        
-                        items.push(ListItem::new(Line::from(vec![
-                            Span::styled(var.format(), line_style)
-                        ])));
-                    }
-                } else {
-                    items.push(ListItem::new(Line::from(vec![
-                        Span::styled("No variables available in this frame", Style::default().fg(Color::Gray))
                     ])));
                 }
             }
