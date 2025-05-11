@@ -2,15 +2,13 @@ use std::process::{Command, Child};
 use std::time::Duration;
 use std::ptr;
 use std::collections::HashMap;
-use std::ffi::CStr;
-use std::fmt;
 
 use anyhow::{anyhow, Result};
 use log::{info, debug, warn, error};
 
 // Mach types and constants
 use mach2::mach_types::{task_t, thread_act_t};
-use mach2::kern_return::{KERN_SUCCESS, kern_return_t};
+use mach2::kern_return::KERN_SUCCESS;
 use mach2::vm_prot::{VM_PROT_READ, VM_PROT_WRITE, VM_PROT_EXECUTE};
 use mach2::vm_types::{mach_vm_address_t, mach_vm_size_t};
 use mach2::port::{mach_port_t, MACH_PORT_NULL};
@@ -728,21 +726,21 @@ impl MacosDebugger {
     }
     
     /// Get thread port from task port and thread ID
-    fn get_thread_port(&self, task: mach_port_t, thread_id: u64) -> Result<thread_act_t> {
+    fn get_thread_port(&self, _task: mach_port_t, thread_id: u64) -> Result<thread_act_t> {
         // In a real implementation, this would look up the thread port for a given thread ID
         // For testing, we'll just return a dummy value
         Ok(thread_id as thread_act_t)
     }
     
     /// Get list of threads for a process
-    fn get_threads(&self, pid: i32) -> Result<Vec<u64>> {
+    fn get_threads(&self, _pid: i32) -> Result<Vec<u64>> {
         // In a real implementation, this would call task_threads and return the thread IDs
         // For testing, we'll just return a dummy list with a single thread
         Ok(vec![1])
     }
     
     /// Get registers for a thread
-    pub fn get_thread_registers(&self, pid: i32, thread_id: u64) -> Result<Registers> {
+    pub fn get_thread_registers(&self, _pid: i32, _thread_id: u64) -> Result<Registers> {
         // In a real implementation, this would call thread_get_state for the thread
         // For testing, we'll just return empty registers
         Ok(Registers::new())
@@ -787,8 +785,8 @@ impl MacosDebugger {
             let kr = thread_get_state(
                 thread_port,
                 ARM_DEBUG_STATE64,
-                std::mem::transmute(&mut debug_state),
-                &mut count,
+                &mut debug_state as *mut _ as *mut u32,
+                &mut count
             );
             
             if kr != KERN_SUCCESS {
@@ -833,8 +831,8 @@ impl MacosDebugger {
             let kr = thread_set_state(
                 thread_port,
                 ARM_DEBUG_STATE64,
-                std::mem::transmute(&debug_state),
-                count,
+                &debug_state as *const _ as *mut u32,
+                count
             );
             
             if kr != KERN_SUCCESS {
@@ -888,8 +886,8 @@ impl MacosDebugger {
             let kr = thread_get_state(
                 thread_port,
                 ARM_DEBUG_STATE64,
-                std::mem::transmute(&mut debug_state),
-                &mut count,
+                &mut debug_state as *mut _ as *mut u32,
+                &mut count
             );
             
             if kr != KERN_SUCCESS {
@@ -934,8 +932,8 @@ impl MacosDebugger {
             let kr = thread_set_state(
                 thread_port,
                 ARM_DEBUG_STATE64,
-                std::mem::transmute(&debug_state),
-                count,
+                &debug_state as *const _ as *mut u32,
+                count
             );
             
             if kr != KERN_SUCCESS {
@@ -985,8 +983,8 @@ impl MacosDebugger {
                     let kr = thread_get_state(
                         thread_port,
                         ARM_DEBUG_STATE64,
-                        std::mem::transmute(&mut debug_state),
-                        &mut count,
+                        &mut debug_state as *mut _ as *mut u32,
+                        &mut count
                     );
                     
                     if kr != KERN_SUCCESS {
@@ -1002,8 +1000,8 @@ impl MacosDebugger {
                     let kr = thread_set_state(
                         thread_port,
                         ARM_DEBUG_STATE64,
-                        std::mem::transmute(&debug_state),
-                        count,
+                        &debug_state as *const _ as *mut u32,
+                        count
                     );
                     
                     if kr != KERN_SUCCESS {
@@ -1051,8 +1049,8 @@ impl MacosDebugger {
             let kr = thread_get_state(
                 thread_port,
                 ARM_DEBUG_STATE64,
-                std::mem::transmute(&mut debug_state),
-                &mut count,
+                &mut debug_state as *mut _ as *mut u32,
+                &mut count
             );
             
             if kr != KERN_SUCCESS {

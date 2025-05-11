@@ -1104,7 +1104,7 @@ impl Debugger {
                 if threads.is_empty() {
                     return Err(anyhow!("No threads available to set watchpoint"));
                 }
-                threads.iter().next().unwrap().0.clone()
+                *threads.iter().next().unwrap().0
             }
         };
         

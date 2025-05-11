@@ -9,7 +9,6 @@ use ratatui::{
 };
 
 use crate::tui::app::{App, View, ActiveBlock};
-use crate::debugger::memory::MemoryFormat;
 use crate::debugger::threads::{ThreadState};
 use crate::debugger::registers::{RegisterGroup, Register};
 use crate::debugger::core::Debugger;
@@ -317,7 +316,7 @@ pub fn draw_memory_view<B: Backend>(
         .borders(Borders::ALL)
         .title(title.alignment(Alignment::Center));
 
-    let inner_area = block.inner(area);
+    let _inner_area = block.inner(area);
     
     if let Some(data) = memory_data {
         // Get any watchpoints that might be covering this memory region
@@ -371,7 +370,7 @@ pub fn draw_memory_view<B: Backend>(
             
             // Check if any address in this row has a watchpoint
             let row_address = memory_address + (i * bytes_per_row) as u64;
-            let row_end_address = row_address + chunk.len() as u64;
+            let _row_end_address = row_address + chunk.len() as u64;
             
             // Create arrays to track which bytes are covered by which watchpoint types
             let mut byte_watchpoints = vec![None; chunk.len()];
@@ -429,7 +428,7 @@ pub fn draw_memory_view<B: Backend>(
             let mut ascii_spans = Vec::new();
             
             for (byte_idx, &byte) in chunk.iter().enumerate() {
-                let c = if byte >= 32 && byte <= 126 {
+                let c = if (32..=126).contains(&byte) {
                     byte as char
                 } else {
                     '.'
@@ -1143,83 +1142,54 @@ impl VariablesView {
         f.render_widget(block, area);
         
         // Try to get the debugger, but handle the case when it's locked
-        match app.debugger.try_lock() {
-            Ok(debugger) => {
-                // Get current frame index
-                let frame_index = app.current_frame;
+        if let Ok(debugger) = app.get_debugger().try_lock() {
+            // Get current frame index
+            let frame_index = app.current_frame;
+            
+            // Create a list of variables to display
+            let mut items = Vec::new();
+            
+            // First, show watch expressions if any
+            if !app.watch_expressions.is_empty() {
+                items.push(ListItem::new(Line::from(vec![
+                    Span::styled("Watched Expressions", Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD))
+                ])));
                 
-                // Create a list of variables to display
-                let mut items = Vec::new();
+                // Get frame variables before we drop the debugger
+                let _frame_vars = debugger.get_variables_by_frame(frame_index);
                 
-                // First, show watch expressions if any
-                if !app.watch_expressions.is_empty() {
-                    items.push(ListItem::new(Line::from(vec![
-                        Span::styled("Watched Expressions", Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD))
-                    ])));
-                    
-                    // Get frame variables before we drop the debugger
-                    let _frame_vars = debugger.get_variables_by_frame(frame_index);
-                    
-                    // Release the immutable borrow to evaluate expressions
-                    drop(debugger);
-                    
-                    // Process each watch expression with its own debugger lock
-                    for expr in &app.watch_expressions {
-                        let expr_result = if let Ok(mut debugger) = app.debugger.try_lock() {
-                            match debugger.evaluate_expression(expr) {
-                                Ok(value) => format!("{} = {}", expr, value),
-                                Err(_) => format!("{} = <error>", expr),
-                            }
-                        } else {
-                            format!("{} = <unavailable>", expr)
-                        };
-                        
-                        items.push(ListItem::new(Line::from(vec![
-                            Span::styled(expr_result, Style::default().fg(Color::LightCyan))
-                        ])));
-                    }
-                    
-                    // Add a separator
-                    items.push(ListItem::new(Line::from(vec![
-                        Span::styled("─".repeat(inner_area.width as usize), Style::default().fg(Color::DarkGray))
-                    ])));
-                    
-                    // Add a header for regular variables
-                    items.push(ListItem::new(Line::from(vec![
-                        Span::styled("Local Variables", Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD))
-                    ])));
-                    
-                    // Re-acquire the debugger to show variables
-                    if let Ok(debugger) = app.debugger.try_lock() {
-                        // Get variables again with the new lock
-                        let _frame_vars = debugger.get_variables_by_frame(frame_index);
-                        
-                        if !_frame_vars.is_empty() {
-                            for var in _frame_vars {
-                                // Format the variable for display
-                                let mut line_style = Style::default();
-                                if var.has_changed() {
-                                    line_style = line_style.fg(Color::Yellow);
-                                }
-                                
-                                items.push(ListItem::new(Line::from(vec![
-                                    Span::styled(var.format(), line_style)
-                                ])));
-                            }
-                        } else {
-                            items.push(ListItem::new(Line::from(vec![
-                                Span::styled("No local variables in this frame", Style::default().fg(Color::Gray))
-                            ])));
+                // Release the immutable borrow to evaluate expressions
+                drop(debugger);
+                
+                // Process each watch expression with its own debugger lock
+                for expr in &app.watch_expressions {
+                    let expr_result = if let Ok(mut debugger) = app.debugger.try_lock() {
+                        match debugger.evaluate_expression(expr) {
+                            Ok(value) => format!("{} = {}", expr, value),
+                            Err(_) => format!("{} = <error>", expr),
                         }
                     } else {
-                        // Couldn't reacquire the debugger
-                        items.push(ListItem::new(Line::from(vec![
-                            Span::styled("Cannot access debugger to show variables", Style::default().fg(Color::Red))
-                        ])));
-                    }
-                } else {
-                    // No watch expressions - just show variables
-                    // Get variables for the current frame
+                        format!("{} = <unavailable>", expr)
+                    };
+                    
+                    items.push(ListItem::new(Line::from(vec![
+                        Span::styled(expr_result, Style::default().fg(Color::LightCyan))
+                    ])));
+                }
+                
+                // Add a separator
+                items.push(ListItem::new(Line::from(vec![
+                    Span::styled("─".repeat(inner_area.width as usize), Style::default().fg(Color::DarkGray))
+                ])));
+                
+                // Add a header for regular variables
+                items.push(ListItem::new(Line::from(vec![
+                    Span::styled("Local Variables", Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD))
+                ])));
+                
+                // Re-acquire the debugger to show variables
+                if let Ok(debugger) = app.debugger.try_lock() {
+                    // Get variables again with the new lock
                     let _frame_vars = debugger.get_variables_by_frame(frame_index);
                     
                     if !_frame_vars.is_empty() {
@@ -1236,34 +1206,52 @@ impl VariablesView {
                         }
                     } else {
                         items.push(ListItem::new(Line::from(vec![
-                            Span::styled("No variables available in this frame", Style::default().fg(Color::Gray))
+                            Span::styled("No local variables in this frame", Style::default().fg(Color::Gray))
                         ])));
                     }
-                }
-                
-                // If no items to display at all
-                if items.is_empty() {
+                } else {
+                    // Couldn't reacquire the debugger
                     items.push(ListItem::new(Line::from(vec![
-                        Span::styled("No variables or watch expressions available", Style::default().fg(Color::Gray))
+                        Span::styled("Cannot access debugger to show variables", Style::default().fg(Color::Red))
                     ])));
                 }
+            } else {
+                // No watch expressions - just show variables
+                // Get variables for the current frame
+                let _frame_vars = debugger.get_variables_by_frame(frame_index);
                 
-                let list = List::new(items)
-                    .block(Block::default())
-                    .highlight_style(Style::default().bg(Color::DarkGray))
-                    .highlight_symbol("> ");
-                
-                f.render_widget(list, inner_area);
-            },
-            Err(_) => {
-                // Draw an error message if we can't get the debugger
-                let message = Paragraph::new("Cannot access debugger - it might be busy")
-                    .style(Style::default().fg(Color::Red))
-                    .alignment(Alignment::Center)
-                    .block(Block::default());
-                
-                f.render_widget(message, inner_area);
+                if !_frame_vars.is_empty() {
+                    for var in _frame_vars {
+                        // Format the variable for display
+                        let mut line_style = Style::default();
+                        if var.has_changed() {
+                            line_style = line_style.fg(Color::Yellow);
+                        }
+                        
+                        items.push(ListItem::new(Line::from(vec![
+                            Span::styled(var.format(), line_style)
+                        ])));
+                    }
+                } else {
+                    items.push(ListItem::new(Line::from(vec![
+                        Span::styled("No variables available in this frame", Style::default().fg(Color::Gray))
+                    ])));
+                }
             }
+            
+            // If no items to display at all
+            if items.is_empty() {
+                items.push(ListItem::new(Line::from(vec![
+                    Span::styled("No variables or watch expressions available", Style::default().fg(Color::Gray))
+                ])));
+            }
+            
+            let list = List::new(items)
+                .block(Block::default())
+                .highlight_style(Style::default().bg(Color::DarkGray))
+                .highlight_symbol("> ");
+            
+            f.render_widget(list, inner_area);
         }
     }
 }
@@ -1297,7 +1285,7 @@ pub fn draw_code_view<B: Backend>(f: &mut Frame<B>, area: Rect, lines: &[String]
 
 // Add a helper function to retrieve watchpoints for a memory range
 fn get_watchpoints_for_range(app: &App, start_addr: u64, end_addr: u64) -> Vec<Watchpoint> {
-    if let Some(debugger) = app.get_debugger().try_lock().ok() {
+    if let Ok(debugger) = app.get_debugger().try_lock() {
         debugger.get_watchpoints()
             .iter()
             .filter(|wp| {
