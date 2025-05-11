@@ -1,3 +1,6 @@
+#![allow(clippy::missing_const_for_fn)]
+#![allow(clippy::must_use_candidate)]
+
 use std::fmt;
 use anyhow::Result;
 use crate::platform::WatchpointType;

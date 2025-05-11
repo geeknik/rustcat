@@ -1,12 +1,16 @@
-#![allow(clippy::multiple_crate_versions)]
-#![allow(clippy::struct_excessive_bools)]
-#![allow(clippy::missing_errors_doc)]
-#![allow(clippy::uninlined_format_args)]
+#![warn(clippy::pedantic)]
+#![warn(clippy::nursery)]
+#![warn(clippy::cargo)]
+// Only allow specific lints where necessary
+#![allow(clippy::multiple_crate_versions)] // Can't control transitive dependencies
+#![allow(clippy::struct_excessive_bools)] // App struct needs many boolean flags
+#![allow(clippy::missing_errors_doc)] // Development tool
+#![allow(clippy::too_many_lines)] // To be addressed in future refactoring
+#![allow(clippy::uninlined_format_args)] // For better readability
+#![allow(clippy::option_if_let_else)] // Readability preference
 #![allow(clippy::significant_drop_tightening)]
 #![allow(clippy::cognitive_complexity)]
-#![allow(clippy::too_many_lines)]
 #![allow(clippy::unnecessary_wraps)]
-#![allow(clippy::option_if_let_else)]
 #![allow(clippy::match_on_vec_items)]
 #![allow(clippy::manual_let_else)]
 #![allow(clippy::match_same_arms)]

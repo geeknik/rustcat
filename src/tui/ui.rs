@@ -1,3 +1,8 @@
+#![allow(clippy::uninlined_format_args)]
+#![allow(clippy::items_after_statements)]
+#![allow(clippy::option_if_let_else)]
+#![allow(clippy::must_use_candidate)]
+
 use ratatui::{
     backend::Backend,
     layout::{Constraint, Direction, Layout, Rect, Alignment},

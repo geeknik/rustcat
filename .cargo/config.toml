@@ -1,2 +1,5 @@
 [build]
 rustflags = ["-A", "dead_code"] 
+
+[target.'cfg(not(target_os = "macos"))']
+rustflags = ["-A", "dead_code", "-A", "clippy::multiple_crate_versions", "-A", "clippy::struct_excessive_bools", "-A", "clippy::missing_errors_doc"] 
