@@ -12,7 +12,7 @@ use mach2::kern_return::KERN_SUCCESS;
 use mach2::vm_prot::{VM_PROT_READ, VM_PROT_WRITE, VM_PROT_EXECUTE};
 use mach2::vm_types::{mach_vm_address_t, mach_vm_size_t};
 use mach2::port::{mach_port_t, MACH_PORT_NULL};
-use mach2::message::{mach_msg_type_number_t};
+use mach2::message::mach_msg_type_number_t;
 use mach2::task::{task_resume, task_suspend, task_threads};
 use mach2::traps::{task_for_pid, mach_task_self};
 use mach2::thread_act::{thread_suspend, thread_get_state, thread_set_state};
@@ -22,7 +22,7 @@ use mach2::vm::{mach_vm_read_overwrite, mach_vm_write, mach_vm_protect, mach_vm_
 use libc::{pid_t, waitpid, WIFSTOPPED, WSTOPSIG};
 use libc::{PT_ATTACHEXC, PT_DETACH, PT_CONTINUE};
 
-use crate::debugger::registers::{Register, Registers};
+use crate::debugger::registers::{Registers, Register};
 use crate::platform::WatchpointType;
 use crate::platform::DebugCapabilities;
 
@@ -32,7 +32,7 @@ use crate::platform::DebugCapabilities;
 // ARM DEBUG STATE STRUCTURE
 #[repr(C)]
 #[derive(Debug, Copy, Clone)]
-pub struct arm_debug_state64_t {
+pub struct ArmDebugState64T {
     // Debug register pairs, each pair has a value and control register
     pub __bvr: [u64; 16],   // Breakpoint Value Registers
     pub __bcr: [u64; 16],   // Breakpoint Control Registers
@@ -74,7 +74,7 @@ pub const ARM_THREAD_STATE64_COUNT: u32 = 68; // 34 64-bit registers (x0-x29, fp
 
 // ARM thread state structure
 #[repr(C)]
-pub struct arm_thread_state64_t {
+pub struct ArmThreadState64T {
     pub __x: [u64; 29],    // x0-x28
     pub __fp: u64,         // Frame pointer x29
     pub __lr: u64,         // Link register x30
@@ -292,7 +292,7 @@ impl MacosDebugger {
         }
         
         // Get ARM64 thread state
-        let mut arm_thread_state: arm_thread_state64_t = unsafe { std::mem::zeroed() };
+        let mut arm_thread_state: ArmThreadState64T = unsafe { std::mem::zeroed() };
         let mut count = ARM_THREAD_STATE64_COUNT;
         
         let kr = unsafe {
@@ -351,7 +351,7 @@ impl MacosDebugger {
         }
         
         // Create and fill thread state structure
-        let mut arm_thread_state: arm_thread_state64_t = unsafe { std::mem::zeroed() };
+        let mut arm_thread_state: ArmThreadState64T = unsafe { std::mem::zeroed() };
         
         // First, get current state as baseline
         let mut count = ARM_THREAD_STATE64_COUNT;
@@ -638,15 +638,14 @@ impl MacosDebugger {
         }
     }
     
-    /// Suspend a specific thread
-    #[allow(dead_code)]
-    fn suspend_thread(&self, thread: thread_act_t) -> Result<()> {
-        // In a real implementation, we would use thread_suspend
-        let kr = unsafe { thread_suspend(thread) };
-        if kr != KERN_SUCCESS {
-            return Err(anyhow!("Failed to suspend thread: {}", kr));
+    /// Suspend a thread by its port
+    fn suspend_thread(thread: thread_act_t) -> Result<()> {
+        unsafe {
+            let kr = thread_suspend(thread);
+            if kr != KERN_SUCCESS {
+                return Err(anyhow!("Failed to suspend thread: error {}", kr));
+            }
         }
-        
         Ok(())
     }
     
@@ -726,24 +725,176 @@ impl MacosDebugger {
     }
     
     /// Get thread port from task port and thread ID
-    fn get_thread_port(&self, _task: mach_port_t, thread_id: u64) -> Result<thread_act_t> {
-        // In a real implementation, this would look up the thread port for a given thread ID
-        // For testing, we'll just return a dummy value
+    fn get_thread_port(task: mach_port_t, thread_id: u64) -> Result<thread_act_t> {
+        // In our implementation, thread_id is actually the thread port number
+        // This is a simplification. In a fully-featured debugger, we would:
+        // 1. Get the list of all threads in the task using task_threads()
+        // 2. Iterate through them to find the one matching our thread_id
+        // 3. Return that thread port
+        
+        // First, verify that the task port is valid
+        if task == MACH_PORT_NULL {
+            return Err(anyhow!("Invalid task port: MACH_PORT_NULL"));
+        }
+        
+        // Get thread list from the task
+        let mut thread_list = std::ptr::null_mut();
+        let mut thread_count: mach_msg_type_number_t = 0;
+        
+        unsafe {
+            let kr = task_threads(
+                task,
+                &mut thread_list,
+                &mut thread_count
+            );
+            
+            if kr != KERN_SUCCESS {
+                return Err(anyhow!("Failed to get threads for task: error {}", kr));
+            }
+            
+            // Look for a matching thread port in the list
+            let mut found = false;
+            for i in 0..thread_count {
+                let current_thread = *(thread_list as *const mach_port_t).add(i as usize);
+                if current_thread as u64 == thread_id {
+                    found = true;
+                    break;
+                }
+            }
+            
+            // Deallocate the thread list when done
+            let _ = mach_vm_deallocate(
+                mach_task_self(),
+                thread_list as mach_vm_address_t,
+                (thread_count * std::mem::size_of::<mach_port_t>() as u32) as mach_vm_size_t
+            );
+            
+            // If we didn't find the thread in this task, return an error
+            if !found {
+                return Err(anyhow!("Thread ID {} not found in the specified task", thread_id));
+            }
+        }
+        
+        // Verify the thread port is valid by getting thread state
+        let mut state = ArmThreadState64T { 
+            __x: [0; 29],
+            __fp: 0,
+            __lr: 0,
+            __sp: 0,
+            __pc: 0,
+            __cpsr: 0
+        };
+        
+        let mut count = ARM_THREAD_STATE64_COUNT;
+        
+        unsafe {
+            let kr = thread_get_state(
+                thread_id as thread_act_t,
+                ARM_THREAD_STATE64,
+                &mut state as *mut _ as *mut u32,
+                &mut count
+            );
+            
+            if kr != KERN_SUCCESS {
+                return Err(anyhow!("Invalid thread port {}: error {}", thread_id, kr));
+            }
+        }
+        
         Ok(thread_id as thread_act_t)
     }
     
     /// Get list of threads for a process
-    fn get_threads(&self, _pid: i32) -> Result<Vec<u64>> {
-        // In a real implementation, this would call task_threads and return the thread IDs
-        // For testing, we'll just return a dummy list with a single thread
-        Ok(vec![1])
+    fn get_threads(&self, pid: i32) -> Result<Vec<u64>> {
+        if let Some(task_port) = self._task_port {
+            // Get thread list from task
+            let mut thread_list = std::ptr::null_mut();
+            let mut thread_count: mach_msg_type_number_t = 0;
+            
+            unsafe {
+                let kr = task_threads(
+                    task_port,
+                    &mut thread_list,
+                    &mut thread_count
+                );
+                
+                if kr != KERN_SUCCESS {
+                    return Err(anyhow!("Failed to get threads for process {}: error {}", pid, kr));
+                }
+                
+                // Convert thread ports to thread IDs (use the port value as ID for now)
+                let mut thread_ids = Vec::with_capacity(thread_count as usize);
+                
+                for i in 0..thread_count {
+                    let thread_port = *(thread_list as *const mach_port_t).add(i as usize);
+                    thread_ids.push(thread_port as u64);
+                    
+                    // Ideally we would deallocate the thread port reference here,
+                    // but we'll rely on mach_vm_deallocate below to clean up
+                }
+                
+                // Deallocate the thread list
+                let _ = mach_vm_deallocate(
+                    mach_task_self(),
+                    thread_list as mach_vm_address_t,
+                    (thread_count * std::mem::size_of::<mach_port_t>() as u32) as mach_vm_size_t
+                );
+                
+                debug!("Found {} threads for process {}", thread_ids.len(), pid);
+                return Ok(thread_ids);
+            }
+        }
+        
+        Err(anyhow!("Not attached to any process"))
     }
     
     /// Get registers for a thread
-    pub fn get_thread_registers(&self, _pid: i32, _thread_id: u64) -> Result<Registers> {
-        // In a real implementation, this would call thread_get_state for the thread
-        // For testing, we'll just return empty registers
-        Ok(Registers::new())
+    pub fn get_thread_registers(&self, _pid: i32, thread_id: u64) -> Result<Registers> {
+        // Get the thread port for the thread ID
+        let thread_port = Self::get_thread_port(self._task_port.unwrap_or(MACH_PORT_NULL), thread_id)?;
+        
+        // Get the thread state
+        let mut arm_thread_state = ArmThreadState64T { 
+            __x: [0; 29],
+            __fp: 0,
+            __lr: 0,
+            __sp: 0,
+            __pc: 0,
+            __cpsr: 0
+        };
+        
+        let mut count = ARM_THREAD_STATE64_COUNT;
+        
+        unsafe {
+            let kr = thread_get_state(
+                thread_port,
+                ARM_THREAD_STATE64, 
+                &mut arm_thread_state as *mut _ as *mut u32,
+                &mut count
+            );
+            
+            if kr != KERN_SUCCESS {
+                return Err(anyhow!("Failed to get thread state: error {}", kr));
+            }
+        }
+        
+        // Create a Registers object and populate it with the thread state
+        let mut registers = Registers::new();
+        
+        // Copy the general-purpose registers (x0-x28)
+        for i in 0..29 {
+            if let Some(reg) = Register::from_arm64_index(i) {
+                registers.set(reg, arm_thread_state.__x[i]);
+            }
+        }
+        
+        // Set special registers
+        registers.set(Register::X29, arm_thread_state.__fp);  // Frame pointer (x29)
+        registers.set(Register::X30, arm_thread_state.__lr);  // Link register (x30)
+        registers.set(Register::Sp, arm_thread_state.__sp);   // Stack pointer
+        registers.set(Register::Pc, arm_thread_state.__pc);   // Program counter
+        registers.set(Register::Cpsr, arm_thread_state.__cpsr); // Current program status register
+        
+        Ok(registers)
     }
     
     /// Set a hardware watchpoint
@@ -770,11 +921,11 @@ impl MacosDebugger {
         }
         
         // Get thread port
-        let thread_port = self.get_thread_port(task, thread_id)?;
+        let thread_port = Self::get_thread_port(task, thread_id)?;
         
         // Get current debug state
-        let mut count = (std::mem::size_of::<arm_debug_state64_t>() / std::mem::size_of::<u32>()) as u32;
-        let mut debug_state = arm_debug_state64_t {
+        let mut count = (std::mem::size_of::<ArmDebugState64T>() / std::mem::size_of::<u32>()) as u32;
+        let mut debug_state = ArmDebugState64T {
             __bvr: [0; 16],
             __bcr: [0; 16],
             __wvr: [0; 16],
@@ -848,8 +999,7 @@ impl MacosDebugger {
             for &tid in &threads {
                 if tid != thread_id {
                     // Apply the same watchpoint to other threads
-                    let _ = self.apply_watchpoint_to_thread(
-                        pid, tid, register_index, address, size, watchpoint_type);
+                    let _ = Self::apply_watchpoint_to_thread(pid, tid, register_index, address, size, watchpoint_type);
                 }
             }
         }
@@ -858,7 +1008,7 @@ impl MacosDebugger {
     }
     
     /// Apply a watchpoint to a specific thread (used for multi-thread consistency)
-    fn apply_watchpoint_to_thread(&self, pid: i32, thread_id: u64, register_index: usize, 
+    fn apply_watchpoint_to_thread(pid: i32, thread_id: u64, register_index: usize, 
                                  address: u64, size: usize, 
                                  watchpoint_type: WatchpointType) -> Result<()> {
         // Get the task port for the target process
@@ -871,11 +1021,11 @@ impl MacosDebugger {
         }
         
         // Get thread port
-        let thread_port = self.get_thread_port(task, thread_id)?;
+        let thread_port = Self::get_thread_port(task, thread_id)?;
         
         // Get current debug state
-        let mut count = (std::mem::size_of::<arm_debug_state64_t>() / std::mem::size_of::<u32>()) as u32;
-        let mut debug_state = arm_debug_state64_t {
+        let mut count = (std::mem::size_of::<ArmDebugState64T>() / std::mem::size_of::<u32>()) as u32;
+        let mut debug_state = ArmDebugState64T {
             __bvr: [0; 16],
             __bcr: [0; 16],
             __wvr: [0; 16],
@@ -968,11 +1118,11 @@ impl MacosDebugger {
         if let Ok(threads) = self.get_threads(pid) {
             for &thread_id in &threads {
                 // Get thread port
-                let thread_port = self.get_thread_port(task, thread_id)?;
+                let thread_port = Self::get_thread_port(task, thread_id)?;
                 
                 // Get current debug state
-                let mut count = (std::mem::size_of::<arm_debug_state64_t>() / std::mem::size_of::<u32>()) as u32;
-                let mut debug_state = arm_debug_state64_t {
+                let mut count = (std::mem::size_of::<ArmDebugState64T>() / std::mem::size_of::<u32>()) as u32;
+                let mut debug_state = ArmDebugState64T {
                     __bvr: [0; 16],
                     __bcr: [0; 16],
                     __wvr: [0; 16],
@@ -1034,11 +1184,11 @@ impl MacosDebugger {
         }
         
         // Get thread port
-        let thread_port = self.get_thread_port(task, thread_id)?;
+        let thread_port = Self::get_thread_port(task, thread_id)?;
         
         // Get current debug state
-        let mut count = (std::mem::size_of::<arm_debug_state64_t>() / std::mem::size_of::<u32>()) as u32;
-        let mut debug_state = arm_debug_state64_t {
+        let mut count = (std::mem::size_of::<ArmDebugState64T>() / std::mem::size_of::<u32>()) as u32;
+        let mut debug_state = ArmDebugState64T {
             __bvr: [0; 16],
             __bcr: [0; 16],
             __wvr: [0; 16],
