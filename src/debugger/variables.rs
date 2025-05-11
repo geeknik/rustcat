@@ -33,7 +33,7 @@ pub enum VariableType {
 }
 
 /// Integer types with their sizes
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum IntegerType {
     /// 8-bit integer
     I8,
@@ -54,7 +54,7 @@ pub enum IntegerType {
 }
 
 /// Floating point types with their sizes
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FloatType {
     /// 32-bit float
     F32,
@@ -65,7 +65,7 @@ pub enum FloatType {
 impl fmt::Display for VariableType {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            VariableType::Integer(int_type) => match int_type {
+            Self::Integer(int_type) => match int_type {
                 IntegerType::I8 => write!(f, "i8"),
                 IntegerType::I16 => write!(f, "i16"),
                 IntegerType::I32 => write!(f, "i32"),
@@ -75,18 +75,18 @@ impl fmt::Display for VariableType {
                 IntegerType::U32 => write!(f, "u32"),
                 IntegerType::U64 => write!(f, "u64"),
             },
-            VariableType::Float(float_type) => match float_type {
+            Self::Float(float_type) => match float_type {
                 FloatType::F32 => write!(f, "f32"),
                 FloatType::F64 => write!(f, "f64"),
             },
-            VariableType::Boolean => write!(f, "bool"),
-            VariableType::Char => write!(f, "char"),
-            VariableType::String => write!(f, "string"),
-            VariableType::Pointer(pointed_type) => write!(f, "*{}", pointed_type),
-            VariableType::Array(element_type, size) => write!(f, "{}[{}]", element_type, size),
-            VariableType::Struct(name) => write!(f, "struct {}", name),
-            VariableType::Enum(name) => write!(f, "enum {}", name),
-            VariableType::Unknown => write!(f, "unknown"),
+            Self::Boolean => write!(f, "bool"),
+            Self::Char => write!(f, "char"),
+            Self::String => write!(f, "string"),
+            Self::Pointer(pointed_type) => write!(f, "*{}", pointed_type),
+            Self::Array(element_type, size) => write!(f, "{}[{}]", element_type, size),
+            Self::Struct(name) => write!(f, "struct {}", name),
+            Self::Enum(name) => write!(f, "enum {}", name),
+            Self::Unknown => write!(f, "unknown"),
         }
     }
 }
@@ -123,14 +123,14 @@ pub enum VariableValue {
 impl fmt::Display for VariableValue {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            VariableValue::Integer(value) => write!(f, "{}", value),
-            VariableValue::UnsignedInteger(value) => write!(f, "{}", value),
-            VariableValue::Float(value) => write!(f, "{}", value),
-            VariableValue::Boolean(value) => write!(f, "{}", value),
-            VariableValue::Char(value) => write!(f, "'{}'", value),
-            VariableValue::String(value) => write!(f, "\"{}\"", value),
-            VariableValue::Address(addr) => write!(f, "0x{:x}", addr),
-            VariableValue::Array(elements) => {
+            Self::Integer(value) => write!(f, "{}", value),
+            Self::UnsignedInteger(value) => write!(f, "{}", value),
+            Self::Float(value) => write!(f, "{}", value),
+            Self::Boolean(value) => write!(f, "{}", value),
+            Self::Char(value) => write!(f, "'{}'", value),
+            Self::String(value) => write!(f, "\"{}\"", value),
+            Self::Address(addr) => write!(f, "0x{:x}", addr),
+            Self::Array(elements) => {
                 write!(f, "[")?;
                 for (i, element) in elements.iter().enumerate() {
                     if i > 0 {
@@ -140,7 +140,7 @@ impl fmt::Display for VariableValue {
                 }
                 write!(f, "]")
             }
-            VariableValue::Struct(fields) => {
+            Self::Struct(fields) => {
                 write!(f, "{{ ")?;
                 let mut first = true;
                 for (name, value) in fields {
@@ -152,15 +152,15 @@ impl fmt::Display for VariableValue {
                 }
                 write!(f, " }}")
             }
-            VariableValue::Reference(value) => write!(f, "{}", value),
-            VariableValue::FunctionPointer(addr) => write!(f, "{}", addr),
-            VariableValue::Unknown => write!(f, "<unknown>"),
+            Self::Reference(value) => write!(f, "{}", value),
+            Self::FunctionPointer(addr) => write!(f, "{}", addr),
+            Self::Unknown => write!(f, "<unknown>"),
         }
     }
 }
 
 /// Scope of a variable
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum VariableScope {
     /// Global variable
     Global,
@@ -177,11 +177,11 @@ pub enum VariableScope {
 impl fmt::Display for VariableScope {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            VariableScope::Global => write!(f, "global"),
-            VariableScope::Local => write!(f, "local"),
-            VariableScope::Instance => write!(f, "instance"),
-            VariableScope::Static => write!(f, "static"),
-            VariableScope::Register => write!(f, "register"),
+            Self::Global => write!(f, "global"),
+            Self::Local => write!(f, "local"),
+            Self::Instance => write!(f, "instance"),
+            Self::Static => write!(f, "static"),
+            Self::Register => write!(f, "register"),
         }
     }
 }
@@ -789,9 +789,9 @@ impl VariableManager {
 
 /// Helper functions for DWARF type information
 mod dwarf_helpers {
-    use super::*;
+    use super::{VariableType, FloatType, IntegerType};
     
-    /// Convert a DWARF base type encoding to a VariableType
+    /// Convert a DWARF base type encoding to a `VariableType`
     #[allow(dead_code)]
     pub fn dwarf_base_type_to_variable_type(encoding: u64, byte_size: u64) -> VariableType {
         // DWARF encodings (from DWARF v4 spec)

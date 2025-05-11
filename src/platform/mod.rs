@@ -17,9 +17,9 @@ impl WatchpointType {
     /// Convert to string representation
     pub fn as_str(&self) -> &'static str {
         match self {
-            WatchpointType::Read => "read",
-            WatchpointType::Write => "write",
-            WatchpointType::ReadWrite => "read/write",
+            Self::Read => "read",
+            Self::Write => "write",
+            Self::ReadWrite => "read/write",
         }
     }
 }

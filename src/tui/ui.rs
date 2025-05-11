@@ -7,24 +7,17 @@ use ratatui::{
     backend::Backend,
     layout::{Constraint, Direction, Layout, Rect, Alignment, Margin},
     style::{Color, Modifier, Style},
-    text::{Line, Span, Text},
-    widgets::{Block, Borders, Padding, Tabs, Paragraph, BorderType, List, ListItem, ListState, Table, Row, Cell, Clear, Wrap},
+    text::{Line, Span},
+    widgets::{Block, Borders, Padding, Tabs, Paragraph, BorderType, List, ListItem, ListState, Clear, Wrap},
     symbols,
     Frame,
 };
 
 use std::sync::mpsc;
-use std::io;
 
-use anyhow::{Result, anyhow};
-use crossterm::event::{Event, KeyCode, KeyModifiers, MouseEventKind, MouseButton};
-use ratatui::Terminal;
-use log::{debug, info, error};
 
 use crate::tui::app::{App, View, ActiveBlock, LogFilter, UiMode};
 use crate::tui::views::{CodeView, CommandView, draw_memory_view, draw_thread_view, draw_call_stack_view, draw_registers_view, draw_trace_view, VariablesView};
-use crate::tui::events::Events;
-use crate::debugger::core::Debugger;
 
 /// Set up log capturing for UI display
 pub fn setup_log_capture() -> mpsc::Receiver<String> {
@@ -111,7 +104,7 @@ pub fn draw_ui<B: Backend>(f: &mut Frame<B>, app: &mut App) {
 }
 
 /// Draw the title bar with tabs
-fn draw_title_bar<B: Backend>(f: &mut Frame<B>, app: &mut App, area: Rect) {
+fn draw_title_bar<B: Backend>(f: &mut Frame<B>, app: &App, area: Rect) {
     // Create enhanced tab titles with keyboard shortcut hints
     let titles = vec![
         Span::styled("[1] Code", 
@@ -197,7 +190,7 @@ fn draw_title_bar<B: Backend>(f: &mut Frame<B>, app: &mut App, area: Rect) {
 }
 
 /// Draw the main content area based on current view
-fn draw_main_area<B: Backend>(f: &mut Frame<B>, app: &mut App, area: Rect) {
+fn draw_main_area<B: Backend>(f: &mut Frame<B>, app: &App, area: Rect) {
     match app.current_view {
         View::Code => {
             let code_view = CodeView::new();
@@ -268,7 +261,7 @@ fn draw_main_area<B: Backend>(f: &mut Frame<B>, app: &mut App, area: Rect) {
 }
 
 /// Draw the log area
-fn draw_log_area<B: Backend>(f: &mut Frame<B>, app: &mut App, area: Rect) {
+fn draw_log_area<B: Backend>(f: &mut Frame<B>, app: &App, area: Rect) {
     // Get filtered logs based on current filter level
     let filtered_logs = app.filtered_logs();
     
@@ -371,7 +364,7 @@ fn draw_help_bar<B: Backend>(f: &mut Frame<B>, app: &App, area: Rect) {
 }
 
 /// Draw the status bar
-fn draw_status_bar<B: Backend>(f: &mut Frame<B>, app: &mut App, area: Rect) {
+fn draw_status_bar<B: Backend>(f: &mut Frame<B>, app: &App, area: Rect) {
     // Create a layout with two columns for status information
     let chunks = Layout::default()
         .direction(Direction::Horizontal)
@@ -450,7 +443,7 @@ fn draw_help_overlay<B: Backend>(f: &mut Frame<B>, app: &App) {
             "  s: Step into".to_string(),
             "  f: Step out".to_string(),
             "  Space: Toggle disassembly at cursor".to_string(),
-            "".to_string(),
+            String::new(),
             "DEBUGGER COMMANDS:".to_string(),
             "  break <location>: Set breakpoint".to_string(),
             "  continue: Resume execution".to_string(),
@@ -472,7 +465,7 @@ fn draw_help_overlay<B: Backend>(f: &mut Frame<B>, app: &App) {
             "  Tab: Cycle display format (Hex/ASCII/Int)".to_string(),
             "  Enter: Go to specific address".to_string(),
             "  Space: Mark memory region".to_string(),
-            "".to_string(),
+            String::new(),
             "COMMANDS:".to_string(),
             "  memory <addr> <size>: View memory at address".to_string(),
             "  x/<size><format> <addr>: Examine memory".to_string(),
@@ -488,7 +481,7 @@ fn draw_help_overlay<B: Backend>(f: &mut Frame<B>, app: &App) {
             "  Up/Down: Select register".to_string(),
             "  Enter: Edit selected register".to_string(),
             "  Space: Show memory at register address".to_string(),
-            "".to_string(),
+            String::new(),
             "COMMANDS:".to_string(),
             "  registers: Show registers".to_string(),
             "  set $reg=value: Set register value".to_string(),
@@ -500,7 +493,7 @@ fn draw_help_overlay<B: Backend>(f: &mut Frame<B>, app: &App) {
             "  1-8: Switch between views".to_string(),
             "  Tab: Switch focus between panels".to_string(),
             "  q: Quit application".to_string(),
-            "".to_string(),
+            String::new(),
             "Press F1 again to close this help overlay".to_string()
         ],
     };

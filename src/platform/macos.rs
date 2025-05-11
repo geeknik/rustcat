@@ -97,12 +97,12 @@ pub struct MacosDebugger {
     child: Option<Child>,
     /// Thread list cache
     threads: Vec<thread_act_t>,
-    /// Currently active hardware watchpoints (register_index -> address)
+    /// Currently active hardware watchpoints (`register_index` -> address)
     watchpoint_registers: HashMap<usize, u64>,
 }
 
 impl MacosDebugger {
-    /// Create a new MacOS debugger
+    /// Create a new `MacOS` debugger
     pub fn new() -> Self {
         info!("Initializing MacOS debugger");
         Self {
@@ -151,7 +151,7 @@ impl MacosDebugger {
         // Wait for the process to stop
         let mut status = 0;
         unsafe {
-            let wait_result = waitpid(pid, &mut status, 0);
+            let wait_result = waitpid(pid, &raw mut status, 0);
             if wait_result < 0 {
                 return Err(anyhow!("Failed to wait for process {}: {}", pid, std::io::Error::last_os_error()));
             }
@@ -169,7 +169,7 @@ impl MacosDebugger {
             let kr = task_for_pid(
                 mach_task_self(),
                 pid as pid_t,
-                &mut task_port,
+                &raw mut task_port,
             );
             
             if kr != KERN_SUCCESS {
@@ -210,6 +210,10 @@ impl MacosDebugger {
     }
     
     /// Continue execution of a process
+    /// 
+    /// # Panics
+    ///
+    /// Panics if not attached to any process when unwrapping the task port
     pub fn continue_execution(&mut self, pid: i32) -> Result<()> {
         if self._task_port.is_none() {
             return Err(anyhow!("Not attached to any process"));
@@ -220,7 +224,7 @@ impl MacosDebugger {
         // Use ptrace to continue execution from current position
         // The (caddr_t)1 means continue from current position
         unsafe {
-            let result = libc::ptrace(PT_CONTINUE as _, pid, 1 as *mut libc::c_char, 0);
+            let result = libc::ptrace(PT_CONTINUE as _, pid, std::ptr::dangling_mut::<libc::c_char>(), 0);
             if result < 0 {
                 return Err(anyhow!("Failed to continue process {}: {}", pid, std::io::Error::last_os_error()));
             }
@@ -229,11 +233,11 @@ impl MacosDebugger {
         // Additionally, ensure all threads are resumed at the Mach level
         let task_port = self._task_port.unwrap();
         let kr = unsafe { task_resume(task_port) };
-        if kr != KERN_SUCCESS {
+        if kr == KERN_SUCCESS {
+            debug!("Successfully resumed task at Mach level");
+        } else {
             warn!("Failed to resume task at Mach level: {}", kr);
             // Continue anyway, as ptrace should have worked
-        } else {
-            debug!("Successfully resumed task at Mach level");
         }
         
         Ok(())
@@ -299,8 +303,8 @@ impl MacosDebugger {
             thread_get_state(
                 thread,
                 ARM_THREAD_STATE64,
-                &mut arm_thread_state as *mut _ as *mut u32,
-                &mut count
+                (&raw mut arm_thread_state).cast::<u32>(),
+                &raw mut count
             )
         };
         
@@ -359,8 +363,8 @@ impl MacosDebugger {
             thread_get_state(
                 thread,
                 ARM_THREAD_STATE64,
-                &mut arm_thread_state as *mut _ as *mut u32,
-                &mut count
+                (&raw mut arm_thread_state).cast::<u32>(),
+                &raw mut count
             )
         };
         
@@ -404,7 +408,7 @@ impl MacosDebugger {
             thread_set_state(
                 thread,
                 ARM_THREAD_STATE64,
-                &arm_thread_state as *const _ as *mut u32,
+                &raw const arm_thread_state as *mut u32,
                 count
             )
         };
@@ -432,7 +436,7 @@ impl MacosDebugger {
         Ok(buffer)
     }
     
-    /// Helper function to read memory using mach_vm_read_overwrite
+    /// Helper function to read memory using `mach_vm_read_overwrite`
     fn read_memory_raw(&self, address: u64, buffer: &mut [u8]) -> Result<()> {
         if let Some(_task_port) = self._task_port {
             debug!("Reading memory at address 0x{:x}, size: {} bytes", address, buffer.len());
@@ -447,7 +451,7 @@ impl MacosDebugger {
                     address as mach_vm_address_t,
                     buffer.len() as mach_vm_size_t,
                     buffer.as_mut_ptr() as mach_vm_address_t,
-                    &mut bytes_read
+                    &raw mut bytes_read
                 )
             };
             
@@ -457,12 +461,12 @@ impl MacosDebugger {
                 return Err(anyhow!("Failed to read memory at 0x{:x}: Error {}", address, kr));
             }
             
-            // Verify we read the expected number of bytes
-            if bytes_read as usize != buffer.len() {
+            // Check if we read the expected number of bytes
+            if bytes_read as usize == buffer.len() {
+                debug!("Successfully read {} bytes from address 0x{:x}", bytes_read, address);
+            } else {
                 warn!("Partial memory read at 0x{:x}: expected {} bytes, got {}", 
                     address, buffer.len(), bytes_read);
-            } else {
-                debug!("Successfully read {} bytes from address 0x{:x}", bytes_read, address);
             }
             
             Ok(())
@@ -484,7 +488,7 @@ impl MacosDebugger {
         Ok(())
     }
     
-    /// Helper function to write memory using mach_vm_write
+    /// Helper function to write memory using `mach_vm_write`
     fn write_memory_raw(&self, address: u64, data: &[u8]) -> Result<()> {
         if let Some(_task_port) = self._task_port {
             debug!("Writing {} bytes to address 0x{:x}", data.len(), address);
@@ -566,8 +570,8 @@ impl MacosDebugger {
             let kr = unsafe {
                 task_threads(
                     _task_port,
-                    &mut thread_list,
-                    &mut thread_count
+                    &raw mut thread_list,
+                    &raw mut thread_count
                 )
             };
             
@@ -744,8 +748,8 @@ impl MacosDebugger {
         unsafe {
             let kr = task_threads(
                 task,
-                &mut thread_list,
-                &mut thread_count
+                &raw mut thread_list,
+                &raw mut thread_count
             );
             
             if kr != KERN_SUCCESS {
@@ -755,8 +759,8 @@ impl MacosDebugger {
             // Look for a matching thread port in the list
             let mut found = false;
             for i in 0..thread_count {
-                let current_thread = *(thread_list as *const mach_port_t).add(i as usize);
-                if current_thread as u64 == thread_id {
+                let current_thread = *thread_list.cast_const().add(i as usize);
+                if u64::from(current_thread) == thread_id {
                     found = true;
                     break;
                 }
@@ -766,7 +770,7 @@ impl MacosDebugger {
             let _ = mach_vm_deallocate(
                 mach_task_self(),
                 thread_list as mach_vm_address_t,
-                (thread_count * std::mem::size_of::<mach_port_t>() as u32) as mach_vm_size_t
+                mach_vm_size_t::from(thread_count * std::mem::size_of::<mach_port_t>() as u32)
             );
             
             // If we didn't find the thread in this task, return an error
@@ -791,8 +795,8 @@ impl MacosDebugger {
             let kr = thread_get_state(
                 thread_id as thread_act_t,
                 ARM_THREAD_STATE64,
-                &mut state as *mut _ as *mut u32,
-                &mut count
+                (&raw mut state).cast::<u32>(),
+                &raw mut count
             );
             
             if kr != KERN_SUCCESS {
@@ -813,8 +817,8 @@ impl MacosDebugger {
             unsafe {
                 let kr = task_threads(
                     task_port,
-                    &mut thread_list,
-                    &mut thread_count
+                    &raw mut thread_list,
+                    &raw mut thread_count
                 );
                 
                 if kr != KERN_SUCCESS {
@@ -825,8 +829,8 @@ impl MacosDebugger {
                 let mut thread_ids = Vec::with_capacity(thread_count as usize);
                 
                 for i in 0..thread_count {
-                    let thread_port = *(thread_list as *const mach_port_t).add(i as usize);
-                    thread_ids.push(thread_port as u64);
+                    let thread_port = *thread_list.cast_const().add(i as usize);
+                    thread_ids.push(u64::from(thread_port));
                     
                     // Ideally we would deallocate the thread port reference here,
                     // but we'll rely on mach_vm_deallocate below to clean up
@@ -836,7 +840,7 @@ impl MacosDebugger {
                 let _ = mach_vm_deallocate(
                     mach_task_self(),
                     thread_list as mach_vm_address_t,
-                    (thread_count * std::mem::size_of::<mach_port_t>() as u32) as mach_vm_size_t
+                    mach_vm_size_t::from(thread_count * std::mem::size_of::<mach_port_t>() as u32)
                 );
                 
                 debug!("Found {} threads for process {}", thread_ids.len(), pid);
@@ -868,8 +872,8 @@ impl MacosDebugger {
             let kr = thread_get_state(
                 thread_port,
                 ARM_THREAD_STATE64, 
-                &mut arm_thread_state as *mut _ as *mut u32,
-                &mut count
+                (&raw mut arm_thread_state).cast::<u32>(),
+                &raw mut count
             );
             
             if kr != KERN_SUCCESS {
@@ -914,7 +918,7 @@ impl MacosDebugger {
         // Get the task port for the target process
         let mut task: mach_port_t = 0;
         unsafe {
-            let kr = task_for_pid(mach_task_self(), pid, &mut task);
+            let kr = task_for_pid(mach_task_self(), pid, &raw mut task);
             if kr != KERN_SUCCESS {
                 return Err(anyhow!("Failed to get task for pid {}: error {}", pid, kr));
             }
@@ -936,8 +940,8 @@ impl MacosDebugger {
             let kr = thread_get_state(
                 thread_port,
                 ARM_DEBUG_STATE64,
-                &mut debug_state as *mut _ as *mut u32,
-                &mut count
+                (&raw mut debug_state).cast::<u32>(),
+                &raw mut count
             );
             
             if kr != KERN_SUCCESS {
@@ -982,7 +986,7 @@ impl MacosDebugger {
             let kr = thread_set_state(
                 thread_port,
                 ARM_DEBUG_STATE64,
-                &debug_state as *const _ as *mut u32,
+                &raw const debug_state as *mut u32,
                 count
             );
             
@@ -1014,7 +1018,7 @@ impl MacosDebugger {
         // Get the task port for the target process
         let mut task: mach_port_t = 0;
         unsafe {
-            let kr = task_for_pid(mach_task_self(), pid, &mut task);
+            let kr = task_for_pid(mach_task_self(), pid, &raw mut task);
             if kr != KERN_SUCCESS {
                 return Err(anyhow!("Failed to get task for pid {}: error {}", pid, kr));
             }
@@ -1036,8 +1040,8 @@ impl MacosDebugger {
             let kr = thread_get_state(
                 thread_port,
                 ARM_DEBUG_STATE64,
-                &mut debug_state as *mut _ as *mut u32,
-                &mut count
+                (&raw mut debug_state).cast::<u32>(),
+                &raw mut count
             );
             
             if kr != KERN_SUCCESS {
@@ -1082,7 +1086,7 @@ impl MacosDebugger {
             let kr = thread_set_state(
                 thread_port,
                 ARM_DEBUG_STATE64,
-                &debug_state as *const _ as *mut u32,
+                &raw const debug_state as *mut u32,
                 count
             );
             
@@ -1108,7 +1112,7 @@ impl MacosDebugger {
         // Get the task port for the target process
         let mut task: mach_port_t = 0;
         unsafe {
-            let kr = task_for_pid(mach_task_self(), pid, &mut task);
+            let kr = task_for_pid(mach_task_self(), pid, &raw mut task);
             if kr != KERN_SUCCESS {
                 return Err(anyhow!("Failed to get task for pid {}: error {}", pid, kr));
             }
@@ -1133,8 +1137,8 @@ impl MacosDebugger {
                     let kr = thread_get_state(
                         thread_port,
                         ARM_DEBUG_STATE64,
-                        &mut debug_state as *mut _ as *mut u32,
-                        &mut count
+                        (&raw mut debug_state).cast::<u32>(),
+                        &raw mut count
                     );
                     
                     if kr != KERN_SUCCESS {
@@ -1150,7 +1154,7 @@ impl MacosDebugger {
                     let kr = thread_set_state(
                         thread_port,
                         ARM_DEBUG_STATE64,
-                        &debug_state as *const _ as *mut u32,
+                        &raw const debug_state as *mut u32,
                         count
                     );
                     
@@ -1177,7 +1181,7 @@ impl MacosDebugger {
         // Get the task port for the target process
         let mut task: mach_port_t = 0;
         unsafe {
-            let kr = task_for_pid(mach_task_self(), pid, &mut task);
+            let kr = task_for_pid(mach_task_self(), pid, &raw mut task);
             if kr != KERN_SUCCESS {
                 return Err(anyhow!("Failed to get task for pid {}: error {}", pid, kr));
             }
@@ -1199,8 +1203,8 @@ impl MacosDebugger {
             let kr = thread_get_state(
                 thread_port,
                 ARM_DEBUG_STATE64,
-                &mut debug_state as *mut _ as *mut u32,
-                &mut count
+                (&raw mut debug_state).cast::<u32>(),
+                &raw mut count
             );
             
             if kr != KERN_SUCCESS {

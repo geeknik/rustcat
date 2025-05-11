@@ -28,8 +28,7 @@ impl<'a> DwarfParser<'a> {
     pub fn load<P: AsRef<Path>>(&mut self, path: P) -> Result<()> {
         // Load the file
         let file_data = std::fs::read(path)?;
-        let cloned_data = file_data.clone();
-        let object = object::File::parse(&*cloned_data)?;
+        let object = object::File::parse(&*file_data)?;
         
         // Create a memory map once for all sections
         // This is a lifetime hack. In a real implementation, we'd 
@@ -193,7 +192,9 @@ impl<'a> DwarfParser<'a> {
                     };
                     
                     // Extract the line number
-                    let line = row.line().map(|l| l.get() as u32).unwrap_or(0);
+                    let line = row.line().map_or(0, |l| {
+                        u32::try_from(l.get()).unwrap_or(0)
+                    });
                     
                     return Ok(Some((path, line)));
                 }
@@ -228,17 +229,13 @@ impl<'a> DwarfParser<'a> {
                     if address >= low_pc && address < high_pc {
                         // Get the function name
                         if let Some(name_attr) = entry.attr_value(gimli::DW_AT_name)? {
-                            // The name could be stored in multiple ways
-                            match name_attr {
-                                AttributeValue::String(s) => {
-                                    if let Ok(raw_name) = dwarf.attr_string(&unit, AttributeValue::String(s)) {
-                                        if let Ok(name) = raw_name.to_string() {
-                                            return Ok(Some(name.to_string()));
-                                        }
+                            // Try to extract the name attribute
+                            if let AttributeValue::String(s) = name_attr {
+                                if let Ok(raw_name) = dwarf.attr_string(&unit, AttributeValue::String(s)) {
+                                    if let Ok(name) = raw_name.to_string() {
+                                        return Ok(Some(name.to_string()));
                                     }
                                 }
-                                // Handle other potential name representations
-                                _ => {}
                             }
                         }
                         
@@ -265,7 +262,8 @@ impl<'a> DwarfParser<'a> {
                 let lines: Vec<&str> = content.lines().collect();
                 
                 let start_line = target_line.saturating_sub(context);
-                let end_line = std::cmp::min(target_line + context, lines.len() as u32);
+                let end_line = std::cmp::min(target_line + context, 
+                    u32::try_from(lines.len()).unwrap_or(u32::MAX));
                 
                 for i in start_line..=end_line {
                     let line_idx = (i as usize).saturating_sub(1);
@@ -310,7 +308,7 @@ impl<'a> DwarfParser<'a> {
                 };
                 
                 let line = match row.line() {
-                    Some(line) => line.get() as u32,
+                    Some(line) => u32::try_from(line.get()).unwrap_or(0),
                     None => continue,
                 };
                 
