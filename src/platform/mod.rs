@@ -2,6 +2,37 @@
 pub mod macos;
 pub mod dwarf;
 
+/// Watchpoint access type
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WatchpointType {
+    /// Watch for read access
+    Read,
+    /// Watch for write access
+    Write,
+    /// Watch for both read and write access
+    ReadWrite,
+}
+
+impl WatchpointType {
+    /// Convert to string representation
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            WatchpointType::Read => "read",
+            WatchpointType::Write => "write",
+            WatchpointType::ReadWrite => "read/write",
+        }
+    }
+}
+
+/// Hardware debug capabilities
+#[derive(Debug, Clone, Copy)]
+pub struct DebugCapabilities {
+    /// Number of hardware breakpoint registers available
+    pub hw_breakpoint_count: usize,
+    /// Number of hardware watchpoint registers available
+    pub hw_watchpoint_count: usize,
+}
+
 #[cfg(not(target_os = "macos"))]
 pub mod dummy {
     // This module provides stub implementations for non-macOS platforms

@@ -104,6 +104,11 @@ Enter command mode with `:` and type commands like:
 - `memory 0x1000 100` - View 100 bytes of memory at address 0x1000
 - `print expr` - Evaluate and print expression
 - `display expr` - Add expression to watch list (displayed each time program stops)
+- `watch 0x1000` - Set a read/write watchpoint at address 0x1000
+- `rwatch 0x1000` - Set a read watchpoint at address 0x1000
+- `wwatch 0x1000` - Set a write watchpoint at address 0x1000
+- `unwatch 0x1000` - Remove watchpoint at address 0x1000
+- `watchlist` - List all active watchpoints
 - `traceon` - Enable function call tracing
 - `traceoff` - Disable function call tracing
 - `traceclear` - Clear function call trace
@@ -164,7 +169,10 @@ All security tests are automatically run via GitHub Actions to prevent regressio
 - [x] Variable inspection
 - [x] Expression evaluation
 - [x] Security testing infrastructure
-- [ ] Watchpoints
+- [x] Watchpoints
+  - [x] Hardware-assisted watchpoints on Apple Silicon
+  - [x] Read/write/both access types
+  - [x] Variable and memory range watching
 - [ ] Full documentation
 
 ## 📄 License

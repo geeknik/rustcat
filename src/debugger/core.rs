@@ -17,6 +17,7 @@ use crate::debugger::tracer::FunctionTracer;
 use crate::debugger::variables::{VariableManager, Variable, VariableValue};
 use crate::platform::macos::MacosDebugger;
 use crate::platform::dwarf::DwarfParser;
+use crate::debugger::breakpoint::{Watchpoint, WatchpointManager};
 
 /// Debugger state
 #[derive(Debug, PartialEq, Clone, Copy)]
@@ -48,6 +49,8 @@ pub struct Debugger {
     platform: MacosDebugger,
     /// Breakpoint manager
     breakpoints: BreakpointManager,
+    /// Watchpoint manager
+    watchpoints: WatchpointManager,
     /// Memory map
     memory_map: Option<MemoryMap>,
     /// Symbol table
@@ -61,6 +64,8 @@ pub struct Debugger {
     start_time: Instant,
     /// Current breakpoint address (if stopped at one)
     current_breakpoint: Option<u64>,
+    /// Current watchpoint address (if stopped at one)
+    current_watchpoint: Option<u64>,
     /// Disassembler for instruction decoding
     disassembler: Disassembler,
     /// Function tracer
@@ -98,12 +103,14 @@ impl Debugger {
             state: DebuggerState::Idle,
             platform,
             breakpoints: BreakpointManager::new(),
+            watchpoints: WatchpointManager::new(),
             memory_map: None,
             symbols,
             thread_manager,
             dwarf_parser: DwarfParser::new(),
             start_time: Instant::now(),
             current_breakpoint: None,
+            current_watchpoint: None,
             disassembler: Disassembler::new(),
             tracer,
             variable_manager,
@@ -1077,6 +1084,132 @@ impl Debugger {
     /// Add a variable for inspection
     pub fn add_variable(&mut self, variable: Variable) {
         self.variable_manager.add_variable(variable);
+    }
+
+    /// Set a watchpoint at the specified address
+    pub fn set_watchpoint(&mut self, address: u64, size: usize, watchpoint_type: crate::platform::WatchpointType) -> Result<()> {
+        info!("Setting watchpoint at address 0x{:x} (size: {})", address, size);
+        
+        // First check if we have a process to debug
+        let pid = match self.pid {
+            Some(pid) => pid,
+            None => return Err(anyhow!("No process to debug")),
+        };
+        
+        // Get current thread ID (use first thread if none is current)
+        let thread_id = match self.thread_manager.current_thread_id() {
+            Some(tid) => tid,
+            None => {
+                let threads = self.thread_manager.get_all_threads();
+                if threads.is_empty() {
+                    return Err(anyhow!("No threads available to set watchpoint"));
+                }
+                threads.iter().next().unwrap().0.clone()
+            }
+        };
+        
+        // Create a watchpoint object
+        let mut watchpoint = Watchpoint::new(address, size, watchpoint_type);
+        
+        // Set source location info if available
+        if let Ok(Some((file, line))) = self.get_line_info(address) {
+            watchpoint.set_source_location(Some((file, line)));
+        }
+        
+        // Set symbol name if available
+        let symbol_name = {
+            let symbols = self.symbols.lock().unwrap();
+            symbols.find_by_address(address).map(|symbol| symbol.name().to_string())
+        };
+        
+        if let Some(name) = symbol_name {
+            watchpoint.set_symbol_name(Some(name));
+        }
+        
+        // Set hardware watchpoint using platform-specific method
+        let register_index = self.platform.set_watchpoint(pid, thread_id, address, size, watchpoint_type)?;
+        
+        // Store the hardware register used
+        watchpoint.set_register_index(Some(register_index));
+        
+        // Add to our watchpoint manager
+        let _index = self.watchpoints.add_watchpoint(watchpoint);
+        
+        info!("Watchpoint set at 0x{:x}, size: {}, type: {}, register: {}", 
+              address, size, watchpoint_type.as_str(), register_index);
+        
+        Ok(())
+    }
+    
+    /// Remove a watchpoint at the specified address
+    pub fn remove_watchpoint(&mut self, address: u64) -> Result<()> {
+        info!("Removing watchpoint at address 0x{:x}", address);
+        
+        // Find the watchpoint with this address
+        let (index, watchpoint) = match self.watchpoints.find_by_address(address) {
+            Some((idx, wp)) => (idx, wp),
+            None => return Err(anyhow!("No watchpoint found at address 0x{:x}", address)),
+        };
+        
+        // Get register index
+        let register_index = match watchpoint.register_index() {
+            Some(idx) => idx,
+            None => return Err(anyhow!("Watchpoint has no hardware register assigned")),
+        };
+        
+        // Get process ID
+        let pid = match self.pid {
+            Some(pid) => pid,
+            None => return Err(anyhow!("No process to debug")),
+        };
+        
+        // Remove hardware watchpoint
+        self.platform.remove_watchpoint(pid, register_index)?;
+        
+        // Remove from our manager
+        self.watchpoints.remove_watchpoint(index);
+        
+        info!("Watchpoint removed from address 0x{:x}", address);
+        
+        Ok(())
+    }
+    
+    /// Remove a watchpoint by ID
+    pub fn remove_watchpoint_by_id(&mut self, id: &str) -> Result<()> {
+        info!("Removing watchpoint with ID: {}", id);
+        
+        // Find the watchpoint with this ID
+        let (index, watchpoint) = match self.watchpoints.find_by_id(id) {
+            Some((idx, wp)) => (idx, wp),
+            None => return Err(anyhow!("No watchpoint found with ID: {}", id)),
+        };
+        
+        // Get register index
+        let register_index = match watchpoint.register_index() {
+            Some(idx) => idx,
+            None => return Err(anyhow!("Watchpoint has no hardware register assigned")),
+        };
+        
+        // Get process ID
+        let pid = match self.pid {
+            Some(pid) => pid,
+            None => return Err(anyhow!("No process to debug")),
+        };
+        
+        // Remove hardware watchpoint
+        self.platform.remove_watchpoint(pid, register_index)?;
+        
+        // Remove from our manager
+        self.watchpoints.remove_watchpoint(index);
+        
+        info!("Watchpoint removed with ID: {}", id);
+        
+        Ok(())
+    }
+    
+    /// Get all watchpoints
+    pub fn get_watchpoints(&self) -> &[Watchpoint] {
+        self.watchpoints.get_all()
     }
 }
 

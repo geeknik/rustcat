@@ -25,6 +25,7 @@ use crate::tui::ui::setup_log_capture;
 use crate::tui::events::Events;
 use crate::debugger::registers::Registers;
 use crate::debugger::threads::{ThreadState, StackFrame};
+use crate::platform::WatchpointType;
 
 /// UI active block (for focus handling)
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -99,6 +100,13 @@ pub enum Command {
     Help(Option<String>),  // Show help for command
     Set(String, String),   // Set variable
     Source(String),        // Execute commands from file
+    
+    // Watchpoint commands
+    WatchRead(String),     // Set read watchpoint at address or expression
+    WatchWrite(String),    // Set write watchpoint at address or expression
+    WatchReadWrite(String), // Set read/write watchpoint at address or expression
+    WatchRemove(String),   // Remove watchpoint
+    WatchList,             // List all watchpoints
     
     // Unknown command
     Unknown(String),       // Unknown command
@@ -629,6 +637,113 @@ impl App {
                     }
                 }
             },
+            Command::WatchRead(expr) => {
+                // Drop the lock on debugger to avoid borrow issues
+                drop(debugger);
+                
+                // Try to evaluate the expression to get an address
+                let address = self.parse_address_expression(&expr);
+                
+                if let Some(address) = address {
+                    // Re-acquire the lock to set the watchpoint
+                    if let Ok(mut debugger) = self.debugger.lock() {
+                        // Default to watching 8 bytes (64-bit)
+                        if let Err(e) = debugger.set_watchpoint(address, 8, WatchpointType::Read) {
+                            error!("Failed to set read watchpoint: {}", e);
+                        } else {
+                            info!("Set read watchpoint at 0x{:x}", address);
+                        }
+                    }
+                } else {
+                    error!("Could not determine address for watchpoint: {}", expr);
+                }
+            },
+            Command::WatchWrite(expr) => {
+                // Drop the lock on debugger to avoid borrow issues
+                drop(debugger);
+                
+                // Try to evaluate the expression to get an address
+                let address = self.parse_address_expression(&expr);
+                
+                if let Some(address) = address {
+                    // Re-acquire the lock to set the watchpoint
+                    if let Ok(mut debugger) = self.debugger.lock() {
+                        // Default to watching 8 bytes (64-bit)
+                        if let Err(e) = debugger.set_watchpoint(address, 8, WatchpointType::Write) {
+                            error!("Failed to set write watchpoint: {}", e);
+                        } else {
+                            info!("Set write watchpoint at 0x{:x}", address);
+                        }
+                    }
+                } else {
+                    error!("Could not determine address for watchpoint: {}", expr);
+                }
+            },
+            Command::WatchReadWrite(expr) => {
+                // Drop the lock on debugger to avoid borrow issues
+                drop(debugger);
+                
+                // Try to evaluate the expression to get an address
+                let address = self.parse_address_expression(&expr);
+                
+                if let Some(address) = address {
+                    // Re-acquire the lock to set the watchpoint
+                    if let Ok(mut debugger) = self.debugger.lock() {
+                        // Default to watching 8 bytes (64-bit)
+                        if let Err(e) = debugger.set_watchpoint(address, 8, WatchpointType::ReadWrite) {
+                            error!("Failed to set read/write watchpoint: {}", e);
+                        } else {
+                            info!("Set read/write watchpoint at 0x{:x}", address);
+                        }
+                    }
+                } else {
+                    error!("Could not determine address for watchpoint: {}", expr);
+                }
+            },
+            Command::WatchRemove(expr) => {
+                // Drop the lock on debugger to avoid borrow issues
+                drop(debugger);
+                
+                // Check if the expression is a watchpoint ID
+                if expr.starts_with("wp") {
+                    // Re-acquire the lock to remove the watchpoint
+                    if let Ok(mut debugger) = self.debugger.lock() {
+                        if let Err(e) = debugger.remove_watchpoint_by_id(&expr) {
+                            error!("Failed to remove watchpoint {}: {}", expr, e);
+                        } else {
+                            info!("Removed watchpoint {}", expr);
+                        }
+                    }
+                } else {
+                    // Try to parse as an address
+                    let address = self.parse_address_expression(&expr);
+                    
+                    if let Some(address) = address {
+                        // Re-acquire the lock to remove the watchpoint
+                        if let Ok(mut debugger) = self.debugger.lock() {
+                            if let Err(e) = debugger.remove_watchpoint(address) {
+                                error!("Failed to remove watchpoint at 0x{:x}: {}", address, e);
+                            } else {
+                                info!("Removed watchpoint at 0x{:x}", address);
+                            }
+                        }
+                    } else {
+                        error!("Could not determine address for watchpoint: {}", expr);
+                    }
+                }
+            },
+            Command::WatchList => {
+                // List all watchpoints
+                let watchpoints = debugger.get_watchpoints();
+                if watchpoints.is_empty() {
+                    info!("No active watchpoints");
+                } else {
+                    info!("Active watchpoints:");
+                    for (i, wp) in watchpoints.iter().enumerate() {
+                        info!("[{}] {}", i, wp);
+                    }
+                }
+            },
             // Handle other commands
             _ => {
                 // Unhandled command
@@ -742,6 +857,42 @@ impl App {
                 }
             },
             "traceclearfilters" => Command::TraceClearFilters,
+            "watch" => {
+                if parts.len() > 1 {
+                    Command::WatchReadWrite(parts[1..].join(" "))
+                } else {
+                    Command::Unknown("watch requires an address or expression".to_string())
+                }
+            },
+            "rwatch" => {
+                if parts.len() > 1 {
+                    Command::WatchRead(parts[1..].join(" "))
+                } else {
+                    Command::Unknown("rwatch requires an address or expression".to_string())
+                }
+            },
+            "awatch" => {
+                if parts.len() > 1 {
+                    Command::WatchReadWrite(parts[1..].join(" "))
+                } else {
+                    Command::Unknown("awatch requires an address or expression".to_string())
+                }
+            },
+            "wwatch" => {
+                if parts.len() > 1 {
+                    Command::WatchWrite(parts[1..].join(" "))
+                } else {
+                    Command::Unknown("wwatch requires an address or expression".to_string())
+                }
+            },
+            "unwatch" => {
+                if parts.len() > 1 {
+                    Command::WatchRemove(parts[1..].join(" "))
+                } else {
+                    Command::Unknown("unwatch requires an address or watchpoint ID".to_string())
+                }
+            },
+            "watchlist" => Command::WatchList,
             _ => Command::Unknown(cmd_str.to_string()),
         }
     }
@@ -761,6 +912,12 @@ impl App {
             ("quit", "Quit debugger"),
             ("print", "Print expression"),
             ("help", "Show help"),
+            ("watch", "Set read/write watchpoint"),
+            ("rwatch", "Set read watchpoint"),
+            ("wwatch", "Set write watchpoint"),
+            ("awatch", "Set read/write watchpoint (same as watch)"),
+            ("unwatch", "Remove watchpoint"),
+            ("watchlist", "List all watchpoints"),
         ];
         
         // Filter commands by input prefix
@@ -1300,6 +1457,28 @@ impl App {
             for var in variables {
                 debug!("Variable: {}: {} = {} (scope: {})", var.name(), var.var_type(), var.value(), var.scope());
             }
+        }
+    }
+
+    // Add a helper method to parse addresses for watchpoints
+    fn parse_address_expression(&self, expr: &str) -> Option<u64> {
+        // Try to evaluate as an expression first
+        if let Ok(mut debugger) = self.debugger.lock() {
+            if let Ok(value) = debugger.evaluate_expression(expr) {
+                match value {
+                    crate::debugger::variables::VariableValue::Integer(address) => return Some(address as u64),
+                    crate::debugger::variables::VariableValue::UnsignedInteger(address) => return Some(address),
+                    crate::debugger::variables::VariableValue::Address(address) => return Some(address),
+                    _ => {}
+                }
+            }
+        }
+        
+        // Try to parse as a hex or decimal address
+        if let Some(s) = expr.strip_prefix("0x").or_else(|| expr.strip_prefix("0X")) {
+            u64::from_str_radix(s, 16).ok()
+        } else {
+            expr.parse::<u64>().ok()
         }
     }
 }

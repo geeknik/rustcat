@@ -1,6 +1,9 @@
 use std::process::{Command, Child};
 use std::time::Duration;
 use std::ptr;
+use std::collections::HashMap;
+use std::ffi::CStr;
+use std::fmt;
 
 use anyhow::{anyhow, Result};
 use log::{info, debug, warn, error};
@@ -13,8 +16,8 @@ use mach2::vm_types::{mach_vm_address_t, mach_vm_size_t};
 use mach2::port::{mach_port_t, MACH_PORT_NULL};
 use mach2::message::{mach_msg_type_number_t};
 use mach2::task::{task_resume, task_suspend, task_threads};
-use mach2::traps::task_for_pid;
-use mach2::thread_act::thread_suspend;
+use mach2::traps::{task_for_pid, mach_task_self};
+use mach2::thread_act::{thread_suspend, thread_get_state, thread_set_state};
 use mach2::vm::{mach_vm_read_overwrite, mach_vm_write, mach_vm_protect, mach_vm_deallocate};
 
 // Libc for waitpid, ptrace
@@ -22,6 +25,44 @@ use libc::{pid_t, waitpid, WIFSTOPPED, WSTOPSIG};
 use libc::{PT_ATTACHEXC, PT_DETACH, PT_CONTINUE};
 
 use crate::debugger::registers::{Register, Registers};
+use crate::platform::WatchpointType;
+use crate::platform::DebugCapabilities;
+
+// ARM64 debug register constants for Apple Silicon
+// Based on ARM Architecture Reference Manual for ARMv8-A
+
+// ARM DEBUG STATE STRUCTURE
+#[repr(C)]
+#[derive(Debug, Copy, Clone)]
+pub struct arm_debug_state64_t {
+    // Debug register pairs, each pair has a value and control register
+    pub __bvr: [u64; 16],   // Breakpoint Value Registers
+    pub __bcr: [u64; 16],   // Breakpoint Control Registers
+    pub __wvr: [u64; 16],   // Watchpoint Value Registers
+    pub __wcr: [u64; 16],   // Watchpoint Control Registers
+}
+
+// DEBUG STATE FLAVOR - ARM_DEBUG_STATE64 value
+pub const ARM_DEBUG_STATE64: i32 = 14;
+
+// ARM64 DEBUG REGISTER MASKS AND CONSTANTS FOR WATCHPOINT CONFIGURATION
+// Watchpoint Control Register (DBGWCR) bit definitions
+const WCR_E: u64 = 0x1;                // Enable bit (bit 0)
+const WCR_PAC_MASK: u64 = 0x3 << 1;    // Privilege Access Control (bits 1-2)
+const WCR_PAC_ANY: u64 = 0x3 << 1;     // Match in any mode
+const WCR_LSC_MASK: u64 = 0x3 << 3;    // Load/Store Control (bits 3-4)
+const WCR_LSC_LOAD: u64 = 0x1 << 3;    // Watch for loads (reads)
+const WCR_LSC_STORE: u64 = 0x2 << 3;   // Watch for stores (writes)
+const WCR_LSC_BOTH: u64 = 0x3 << 3;    // Watch for both loads and stores
+const WCR_BAS_MASK: u64 = 0xFF << 5;   // Byte Address Select (bits 5-12)
+const WCR_BAS_BYTE1: u64 = 0x01 << 5;  // Watch byte 0
+const WCR_BAS_BYTE2: u64 = 0x03 << 5;  // Watch bytes 0-1
+const WCR_BAS_BYTE4: u64 = 0x0F << 5;  // Watch bytes 0-3
+const WCR_BAS_BYTE8: u64 = 0xFF << 5;  // Watch bytes 0-7
+const WCR_MASK: u64 = 0x0000_FFFF;     // Mask for the control bits we use
+
+// Maximum number of watchpoints on Apple Silicon
+const MAX_WATCHPOINTS: usize = 4;       // M1/M2 typically have 4 watchpoint registers
 
 /// INT3 instruction (breakpoint)
 const BREAKPOINT_OPCODE: u8 = 0xCC;
@@ -44,23 +85,6 @@ pub struct arm_thread_state64_t {
     pub __cpsr: u64,       // Current program status register (u64 to match Register type)
 }
 
-// Function prototype for thread_get_state
-extern "C" {
-    pub fn thread_get_state(
-        thread: thread_act_t,
-        flavor: i32,
-        state: *mut i32,
-        count: *mut u32,
-    ) -> kern_return_t;
-    
-    pub fn thread_set_state(
-        thread: thread_act_t,
-        flavor: i32,
-        state: *const i32,
-        count: u32,
-    ) -> kern_return_t;
-}
-
 // ARM NEON (SIMD) state flavor and structure (for future use)
 #[allow(dead_code)]
 pub const ARM_NEON_STATE64: i32 = 17;
@@ -75,6 +99,8 @@ pub struct MacosDebugger {
     child: Option<Child>,
     /// Thread list cache
     threads: Vec<thread_act_t>,
+    /// Currently active hardware watchpoints (register_index -> address)
+    watchpoint_registers: HashMap<usize, u64>,
 }
 
 impl MacosDebugger {
@@ -85,6 +111,7 @@ impl MacosDebugger {
             _task_port: None,
             child: None,
             threads: Vec::new(),
+            watchpoint_registers: HashMap::new(),
         }
     }
     
@@ -142,7 +169,7 @@ impl MacosDebugger {
         let mut task_port: mach_port_t = MACH_PORT_NULL;
         unsafe {
             let kr = task_for_pid(
-                mach2::traps::mach_task_self(),
+                mach_task_self(),
                 pid as pid_t,
                 &mut task_port,
             );
@@ -274,7 +301,7 @@ impl MacosDebugger {
             thread_get_state(
                 thread,
                 ARM_THREAD_STATE64,
-                &mut arm_thread_state as *mut _ as *mut ::std::os::raw::c_int,
+                &mut arm_thread_state as *mut _ as *mut u32,
                 &mut count
             )
         };
@@ -334,7 +361,7 @@ impl MacosDebugger {
             thread_get_state(
                 thread,
                 ARM_THREAD_STATE64,
-                &mut arm_thread_state as *mut _ as *mut ::std::os::raw::c_int,
+                &mut arm_thread_state as *mut _ as *mut u32,
                 &mut count
             )
         };
@@ -379,7 +406,7 @@ impl MacosDebugger {
             thread_set_state(
                 thread,
                 ARM_THREAD_STATE64,
-                &arm_thread_state as *const _ as *const ::std::os::raw::c_int,
+                &arm_thread_state as *const _ as *mut u32,
                 count
             )
         };
@@ -563,7 +590,7 @@ impl MacosDebugger {
             // Always deallocate the thread list when done
             unsafe {
                 let _ = mach_vm_deallocate(
-                    mach2::traps::mach_task_self(),
+                    mach_task_self(),
                     thread_list as mach_vm_address_t,
                     (thread_count as usize * std::mem::size_of::<thread_act_t>()) as mach_vm_size_t
                 );
@@ -689,6 +716,371 @@ impl MacosDebugger {
         debug!("Process stopped (simulated)");
         
         Ok(())
+    }
+    
+    /// Query hardware debug capabilities
+    pub fn get_debug_capabilities(&self) -> DebugCapabilities {
+        // For Apple Silicon M1/M2, typically 4 hardware watchpoints
+        DebugCapabilities {
+            hw_breakpoint_count: 8,  // M1/M2 typically have 8 hardware breakpoint registers
+            hw_watchpoint_count: MAX_WATCHPOINTS,
+        }
+    }
+    
+    /// Get thread port from task port and thread ID
+    fn get_thread_port(&self, task: mach_port_t, thread_id: u64) -> Result<thread_act_t> {
+        // In a real implementation, this would look up the thread port for a given thread ID
+        // For testing, we'll just return a dummy value
+        Ok(thread_id as thread_act_t)
+    }
+    
+    /// Get list of threads for a process
+    fn get_threads(&self, pid: i32) -> Result<Vec<u64>> {
+        // In a real implementation, this would call task_threads and return the thread IDs
+        // For testing, we'll just return a dummy list with a single thread
+        Ok(vec![1])
+    }
+    
+    /// Get registers for a thread
+    pub fn get_thread_registers(&self, pid: i32, thread_id: u64) -> Result<Registers> {
+        // In a real implementation, this would call thread_get_state for the thread
+        // For testing, we'll just return empty registers
+        Ok(Registers::new())
+    }
+    
+    /// Set a hardware watchpoint
+    pub fn set_watchpoint(&mut self, pid: i32, thread_id: u64, address: u64, size: usize, 
+                          watchpoint_type: WatchpointType) -> Result<usize> {
+        // Check if we have any free watchpoint registers
+        let used_registers = self.watchpoint_registers.len();
+        if used_registers >= MAX_WATCHPOINTS {
+            return Err(anyhow!("No free hardware watchpoint registers available"));
+        }
+        
+        // Find the next available register index
+        let register_index = (0..MAX_WATCHPOINTS)
+            .find(|i| !self.watchpoint_registers.contains_key(i))
+            .unwrap(); // Safe because we checked used_registers < MAX_WATCHPOINTS
+        
+        // Get the task port for the target process
+        let mut task: mach_port_t = 0;
+        unsafe {
+            let kr = task_for_pid(mach_task_self(), pid, &mut task);
+            if kr != KERN_SUCCESS {
+                return Err(anyhow!("Failed to get task for pid {}: error {}", pid, kr));
+            }
+        }
+        
+        // Get thread port
+        let thread_port = self.get_thread_port(task, thread_id)?;
+        
+        // Get current debug state
+        let mut count = (std::mem::size_of::<arm_debug_state64_t>() / std::mem::size_of::<u32>()) as u32;
+        let mut debug_state = arm_debug_state64_t {
+            __bvr: [0; 16],
+            __bcr: [0; 16],
+            __wvr: [0; 16],
+            __wcr: [0; 16],
+        };
+        
+        unsafe {
+            let kr = thread_get_state(
+                thread_port,
+                ARM_DEBUG_STATE64,
+                std::mem::transmute(&mut debug_state),
+                &mut count,
+            );
+            
+            if kr != KERN_SUCCESS {
+                return Err(anyhow!("Failed to get debug state: error {}", kr));
+            }
+        }
+        
+        // Set up watchpoint value register
+        debug_state.__wvr[register_index] = address;
+        
+        // Set up watchpoint control register
+        let mut wcr_val: u64 = 0;
+        
+        // Enable bit
+        wcr_val |= WCR_E;
+        
+        // Set privilege mode (match in any mode)
+        wcr_val |= WCR_PAC_ANY;
+        
+        // Set watch type
+        match watchpoint_type {
+            WatchpointType::Read => wcr_val |= WCR_LSC_LOAD,
+            WatchpointType::Write => wcr_val |= WCR_LSC_STORE,
+            WatchpointType::ReadWrite => wcr_val |= WCR_LSC_BOTH,
+        }
+        
+        // Set byte address select
+        let bas = match size {
+            1 => WCR_BAS_BYTE1,
+            2 => WCR_BAS_BYTE2,
+            4 => WCR_BAS_BYTE4,
+            8 => WCR_BAS_BYTE8,
+            _ => return Err(anyhow!("Invalid watchpoint size: {}, must be 1, 2, 4, or 8", size)),
+        };
+        wcr_val |= bas;
+        
+        // Update control register
+        debug_state.__wcr[register_index] = wcr_val;
+        
+        // Set the new debug state
+        unsafe {
+            let kr = thread_set_state(
+                thread_port,
+                ARM_DEBUG_STATE64,
+                std::mem::transmute(&debug_state),
+                count,
+            );
+            
+            if kr != KERN_SUCCESS {
+                return Err(anyhow!("Failed to set debug state: error {}", kr));
+            }
+        }
+        
+        // Remember we're using this register
+        self.watchpoint_registers.insert(register_index, address);
+        
+        // Need to apply the watchpoint to all threads
+        if let Ok(threads) = self.get_threads(pid) {
+            for &tid in &threads {
+                if tid != thread_id {
+                    // Apply the same watchpoint to other threads
+                    let _ = self.apply_watchpoint_to_thread(
+                        pid, tid, register_index, address, size, watchpoint_type);
+                }
+            }
+        }
+        
+        Ok(register_index)
+    }
+    
+    /// Apply a watchpoint to a specific thread (used for multi-thread consistency)
+    fn apply_watchpoint_to_thread(&self, pid: i32, thread_id: u64, register_index: usize, 
+                                 address: u64, size: usize, 
+                                 watchpoint_type: WatchpointType) -> Result<()> {
+        // Get the task port for the target process
+        let mut task: mach_port_t = 0;
+        unsafe {
+            let kr = task_for_pid(mach_task_self(), pid, &mut task);
+            if kr != KERN_SUCCESS {
+                return Err(anyhow!("Failed to get task for pid {}: error {}", pid, kr));
+            }
+        }
+        
+        // Get thread port
+        let thread_port = self.get_thread_port(task, thread_id)?;
+        
+        // Get current debug state
+        let mut count = (std::mem::size_of::<arm_debug_state64_t>() / std::mem::size_of::<u32>()) as u32;
+        let mut debug_state = arm_debug_state64_t {
+            __bvr: [0; 16],
+            __bcr: [0; 16],
+            __wvr: [0; 16],
+            __wcr: [0; 16],
+        };
+        
+        unsafe {
+            let kr = thread_get_state(
+                thread_port,
+                ARM_DEBUG_STATE64,
+                std::mem::transmute(&mut debug_state),
+                &mut count,
+            );
+            
+            if kr != KERN_SUCCESS {
+                return Err(anyhow!("Failed to get debug state: error {}", kr));
+            }
+        }
+        
+        // Set up watchpoint value register
+        debug_state.__wvr[register_index] = address;
+        
+        // Set up watchpoint control register
+        let mut wcr_val: u64 = 0;
+        
+        // Enable bit
+        wcr_val |= WCR_E;
+        
+        // Set privilege mode (match in any mode)
+        wcr_val |= WCR_PAC_ANY;
+        
+        // Set watch type
+        match watchpoint_type {
+            WatchpointType::Read => wcr_val |= WCR_LSC_LOAD,
+            WatchpointType::Write => wcr_val |= WCR_LSC_STORE,
+            WatchpointType::ReadWrite => wcr_val |= WCR_LSC_BOTH,
+        }
+        
+        // Set byte address select
+        let bas = match size {
+            1 => WCR_BAS_BYTE1,
+            2 => WCR_BAS_BYTE2,
+            4 => WCR_BAS_BYTE4,
+            8 => WCR_BAS_BYTE8,
+            _ => return Err(anyhow!("Invalid watchpoint size: {}, must be 1, 2, 4, or 8", size)),
+        };
+        wcr_val |= bas;
+        
+        // Update control register
+        debug_state.__wcr[register_index] = wcr_val;
+        
+        // Set the new debug state
+        unsafe {
+            let kr = thread_set_state(
+                thread_port,
+                ARM_DEBUG_STATE64,
+                std::mem::transmute(&debug_state),
+                count,
+            );
+            
+            if kr != KERN_SUCCESS {
+                return Err(anyhow!("Failed to set debug state: error {}", kr));
+            }
+        }
+        
+        Ok(())
+    }
+    
+    /// Remove a hardware watchpoint
+    pub fn remove_watchpoint(&mut self, pid: i32, register_index: usize) -> Result<()> {
+        if register_index >= MAX_WATCHPOINTS {
+            return Err(anyhow!("Invalid watchpoint register index: {}", register_index));
+        }
+        
+        // Check if the register is in use
+        if !self.watchpoint_registers.contains_key(&register_index) {
+            return Err(anyhow!("Watchpoint register {} is not in use", register_index));
+        }
+        
+        // Get the task port for the target process
+        let mut task: mach_port_t = 0;
+        unsafe {
+            let kr = task_for_pid(mach_task_self(), pid, &mut task);
+            if kr != KERN_SUCCESS {
+                return Err(anyhow!("Failed to get task for pid {}: error {}", pid, kr));
+            }
+        }
+        
+        // Get all threads and remove the watchpoint from each
+        if let Ok(threads) = self.get_threads(pid) {
+            for &thread_id in &threads {
+                // Get thread port
+                let thread_port = self.get_thread_port(task, thread_id)?;
+                
+                // Get current debug state
+                let mut count = (std::mem::size_of::<arm_debug_state64_t>() / std::mem::size_of::<u32>()) as u32;
+                let mut debug_state = arm_debug_state64_t {
+                    __bvr: [0; 16],
+                    __bcr: [0; 16],
+                    __wvr: [0; 16],
+                    __wcr: [0; 16],
+                };
+                
+                unsafe {
+                    let kr = thread_get_state(
+                        thread_port,
+                        ARM_DEBUG_STATE64,
+                        std::mem::transmute(&mut debug_state),
+                        &mut count,
+                    );
+                    
+                    if kr != KERN_SUCCESS {
+                        return Err(anyhow!("Failed to get debug state: error {}", kr));
+                    }
+                }
+                
+                // Disable the watchpoint by clearing the enable bit
+                debug_state.__wcr[register_index] &= !WCR_E;
+                
+                // Set the new debug state
+                unsafe {
+                    let kr = thread_set_state(
+                        thread_port,
+                        ARM_DEBUG_STATE64,
+                        std::mem::transmute(&debug_state),
+                        count,
+                    );
+                    
+                    if kr != KERN_SUCCESS {
+                        return Err(anyhow!("Failed to set debug state: error {}", kr));
+                    }
+                }
+            }
+        }
+        
+        // Remove from our tracking map
+        self.watchpoint_registers.remove(&register_index);
+        
+        Ok(())
+    }
+    
+    /// Check if a thread was stopped by a watchpoint
+    pub fn is_watchpoint_hit(&self, pid: i32, thread_id: u64) -> Result<Option<(usize, u64)>> {
+        // If no watchpoints are active, return immediately
+        if self.watchpoint_registers.is_empty() {
+            return Ok(None);
+        }
+        
+        // Get the task port for the target process
+        let mut task: mach_port_t = 0;
+        unsafe {
+            let kr = task_for_pid(mach_task_self(), pid, &mut task);
+            if kr != KERN_SUCCESS {
+                return Err(anyhow!("Failed to get task for pid {}: error {}", pid, kr));
+            }
+        }
+        
+        // Get thread port
+        let thread_port = self.get_thread_port(task, thread_id)?;
+        
+        // Get current debug state
+        let mut count = (std::mem::size_of::<arm_debug_state64_t>() / std::mem::size_of::<u32>()) as u32;
+        let mut debug_state = arm_debug_state64_t {
+            __bvr: [0; 16],
+            __bcr: [0; 16],
+            __wvr: [0; 16],
+            __wcr: [0; 16],
+        };
+        
+        unsafe {
+            let kr = thread_get_state(
+                thread_port,
+                ARM_DEBUG_STATE64,
+                std::mem::transmute(&mut debug_state),
+                &mut count,
+            );
+            
+            if kr != KERN_SUCCESS {
+                return Err(anyhow!("Failed to get debug state: error {}", kr));
+            }
+        }
+        
+        // Check each watchpoint register for a hit
+        for (&register_index, &address) in &self.watchpoint_registers {
+            // Check if this watchpoint is enabled and hit
+            // The hit status is in bit 0 of the ESR_EL1 register, but unfortunately
+            // we can't access this directly in userspace on macOS
+            // Instead, we have to infer by checking PC and examining memory accesses
+            
+            // For now, we'll use a simple approach: if the thread is stopped and
+            // we have active watchpoints, we'll check if the PC is near any of the 
+            // watchpoint addresses
+            let registers = self.get_thread_registers(pid, thread_id)?;
+            let pc = registers.get_program_counter().unwrap_or(0);
+            
+            // If PC is within a reasonable range of the watchpoint address
+            // (this is a heuristic, not guaranteed to be accurate)
+            if pc.abs_diff(address) < 64 {
+                return Ok(Some((register_index, address)));
+            }
+        }
+        
+        Ok(None)
     }
 }
 

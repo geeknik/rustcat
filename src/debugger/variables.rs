@@ -91,45 +91,45 @@ impl fmt::Display for VariableType {
     }
 }
 
-/// Represents a variable's value
+/// Possible values for a variable
 #[derive(Debug, Clone)]
 pub enum VariableValue {
-    /// Integer value
-    Integer(i64),
-    /// Unsigned integer value
-    UInteger(u64),
-    /// Floating point value
-    Float(f64),
+    /// Unsupported or unknown type
+    Unknown,
     /// Boolean value
     Boolean(bool),
+    /// Integer value (any size)
+    Integer(i64),
+    /// Unsigned integer value (any size)
+    UnsignedInteger(u64),
+    /// Memory address
+    Address(u64),
+    /// Floating point value (32 or 64 bit)
+    Float(f64),
     /// Character value
     Char(char),
     /// String value
     String(String),
-    /// Pointer value (memory address)
-    Pointer(u64),
-    /// Array value (values of elements)
+    /// Array of values
     Array(Vec<VariableValue>),
-    /// Struct value (field names and values)
+    /// Struct with named fields
     Struct(HashMap<String, VariableValue>),
-    /// Enum value (variant name and associated value if any)
-    Enum(String, Option<Box<VariableValue>>),
-    /// Raw bytes (for unknown types)
-    RawBytes(Vec<u8>),
-    /// Out of scope or unavailable
-    Unavailable,
+    /// Reference/pointer to another value
+    Reference(Box<VariableValue>),
+    /// Function pointer
+    FunctionPointer(u64),
 }
 
 impl fmt::Display for VariableValue {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             VariableValue::Integer(value) => write!(f, "{}", value),
-            VariableValue::UInteger(value) => write!(f, "{}", value),
+            VariableValue::UnsignedInteger(value) => write!(f, "{}", value),
             VariableValue::Float(value) => write!(f, "{}", value),
             VariableValue::Boolean(value) => write!(f, "{}", value),
             VariableValue::Char(value) => write!(f, "'{}'", value),
             VariableValue::String(value) => write!(f, "\"{}\"", value),
-            VariableValue::Pointer(addr) => write!(f, "0x{:x}", addr),
+            VariableValue::Address(addr) => write!(f, "0x{:x}", addr),
             VariableValue::Array(elements) => {
                 write!(f, "[")?;
                 for (i, element) in elements.iter().enumerate() {
@@ -152,24 +152,9 @@ impl fmt::Display for VariableValue {
                 }
                 write!(f, " }}")
             }
-            VariableValue::Enum(variant, value) => {
-                write!(f, "{}",  variant)?;
-                if let Some(val) = value {
-                    write!(f, "({})", val)?;
-                }
-                Ok(())
-            }
-            VariableValue::RawBytes(bytes) => {
-                write!(f, "bytes[")?;
-                for (i, byte) in bytes.iter().enumerate() {
-                    if i > 0 {
-                        write!(f, " ")?;
-                    }
-                    write!(f, "{:02x}", byte)?;
-                }
-                write!(f, "]")
-            }
-            VariableValue::Unavailable => write!(f, "<unavailable>"),
+            VariableValue::Reference(value) => write!(f, "{}", value),
+            VariableValue::FunctionPointer(addr) => write!(f, "{}", addr),
+            VariableValue::Unknown => write!(f, "<unknown>"),
         }
     }
 }
@@ -471,7 +456,7 @@ impl VariableManager {
         
         if expression.starts_with("0x") || expression.starts_with("0X") {
             if let Ok(value) = u64::from_str_radix(&expression[2..], 16) {
-                return Ok(VariableValue::UInteger(value));
+                return Ok(VariableValue::UnsignedInteger(value));
             }
         }
         
@@ -495,15 +480,15 @@ impl VariableManager {
             
             // Convert the value to an address
             let _address = match inner_value {
-                VariableValue::UInteger(addr) => addr,
+                VariableValue::UnsignedInteger(addr) => addr,
                 VariableValue::Integer(addr) if addr >= 0 => addr as u64,
-                VariableValue::Pointer(addr) => addr,
+                VariableValue::Address(addr) => addr,
                 _ => return Err(anyhow!("Cannot dereference non-pointer value: {:?}", inner_value)),
             };
             
             // TODO: Use platform to read memory at address
             // For now, return a placeholder
-            return Ok(VariableValue::UInteger(0xDEAD_BEEF));
+            return Ok(VariableValue::Address(_address));
         }
         
         // Handle address-of operator: &var
@@ -511,7 +496,7 @@ impl VariableManager {
             let var_name = &expression[1..];
             if let Some(var) = self.get_variable(var_name) {
                 if let Some(addr) = var.address() {
-                    return Ok(VariableValue::Pointer(addr));
+                    return Ok(VariableValue::Address(addr));
                 }
                 return Err(anyhow!("Variable '{}' is not stored in memory", var_name));
             }
@@ -561,7 +546,7 @@ impl VariableManager {
                     }
                     i as usize
                 },
-                VariableValue::UInteger(i) => i as usize,
+                VariableValue::UnsignedInteger(i) => i as usize,
                 _ => return Err(anyhow!("Array index must be an integer")),
             };
             
@@ -590,7 +575,7 @@ impl VariableManager {
             ]);
             
             if let Some(&value) = registers.get(reg_name) {
-                return Ok(VariableValue::UInteger(value));
+                return Ok(VariableValue::UnsignedInteger(value));
             }
             return Err(anyhow!("Unknown register: ${}", reg_name));
             
@@ -611,9 +596,9 @@ impl VariableManager {
                 
                 // Convert to address
                 let _addr = match addr_value {
-                    VariableValue::UInteger(a) => a,
+                    VariableValue::UnsignedInteger(a) => a,
                     VariableValue::Integer(a) if a >= 0 => a as u64,
-                    VariableValue::Pointer(a) => a,
+                    VariableValue::Address(a) => a,
                     _ => return Err(anyhow!("Invalid address in memory access: {:?}", addr_value)),
                 };
                 
@@ -688,23 +673,23 @@ impl VariableManager {
                             _ => Err(anyhow!("Unsupported operation '{}' for integer types", c)),
                         }
                     },
-                    (VariableValue::UInteger(a), VariableValue::UInteger(b)) => {
+                    (VariableValue::UnsignedInteger(a), VariableValue::UnsignedInteger(b)) => {
                         match c {
-                            '+' => Ok(VariableValue::UInteger(a + b)),
-                            '-' => Ok(VariableValue::UInteger(a.saturating_sub(b))),
-                            '*' => Ok(VariableValue::UInteger(a * b)),
+                            '+' => Ok(VariableValue::UnsignedInteger(a + b)),
+                            '-' => Ok(VariableValue::UnsignedInteger(a.saturating_sub(b))),
+                            '*' => Ok(VariableValue::UnsignedInteger(a * b)),
                             '/' => {
                                 if b == 0 {
                                     Err(anyhow!("Division by zero"))
                                 } else {
-                                    Ok(VariableValue::UInteger(a / b))
+                                    Ok(VariableValue::UnsignedInteger(a / b))
                                 }
                             },
                             '%' => {
                                 if b == 0 {
                                     Err(anyhow!("Modulo by zero"))
                                 } else {
-                                    Ok(VariableValue::UInteger(a % b))
+                                    Ok(VariableValue::UnsignedInteger(a % b))
                                 }
                             },
                             _ => Err(anyhow!("Unsupported operation '{}' for unsigned integer types", c)),
@@ -727,13 +712,13 @@ impl VariableManager {
                         }
                     },
                     // Handle mixed type operations with appropriate conversions
-                    (VariableValue::Integer(a), VariableValue::UInteger(b)) => {
+                    (VariableValue::Integer(a), VariableValue::UnsignedInteger(b)) => {
                         match c {
                             '+' => {
                                 if a >= 0 {
-                                    Ok(VariableValue::UInteger(a as u64 + b))
+                                    Ok(VariableValue::UnsignedInteger(a as u64 + b))
                                 } else if b > a.unsigned_abs() {
-                                    Ok(VariableValue::UInteger(b - a.unsigned_abs()))
+                                    Ok(VariableValue::UnsignedInteger(b - a.unsigned_abs()))
                                 } else {
                                     Ok(VariableValue::Integer(a + b as i64))
                                 }

@@ -13,6 +13,7 @@ use crate::debugger::memory::MemoryFormat;
 use crate::debugger::threads::{ThreadState};
 use crate::debugger::registers::{RegisterGroup, Register};
 use crate::debugger::core::Debugger;
+use crate::debugger::breakpoint::Watchpoint;
 
 /// View for the code display
 pub struct CodeView;
@@ -307,151 +308,204 @@ pub fn draw_memory_view<B: Backend>(
     memory_data: Option<&Vec<u8>>,
     memory_address: u64,
 ) {
-    let block = Block::default()
-        .title(Line::from(Span::styled(
-            format!("Memory - {}", app.get_memory_format().as_str()),
-            Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD),
-        )))
-        .borders(Borders::ALL)
-        .border_style(Style::default().fg(if app.current_view == View::Memory {
-            Color::Green
-        } else {
-            Color::Gray
-        }));
+    let title = Line::from(Span::styled(
+        "Memory Viewer",
+        Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD),
+    ));
     
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .title(title.alignment(Alignment::Center));
+
     let inner_area = block.inner(area);
-    f.render_widget(block, area);
     
     if let Some(data) = memory_data {
-        // Calculate how many bytes fit per row (16 bytes is standard)
+        // Get any watchpoints that might be covering this memory region
+        let memory_end = memory_address + data.len() as u64;
+        let active_watchpoints = get_watchpoints_for_range(app, memory_address, memory_end);
+        
         let bytes_per_row = 16;
+        let mut rows = Vec::new();
         
-        // Calculate visible rows
-        let visible_rows = inner_area.height as usize;
-        
-        // Check if we should use specialized formatting
-        if app.get_memory_format() != MemoryFormat::Hex && 
-           app.get_memory_format() != MemoryFormat::Ascii {
-            // Use specialized formatters
-            // Create a debugger instance to format the memory
-            if let Ok(debugger) = crate::debugger::core::Debugger::new("dummy") {
-                let formatted = debugger.format_memory(data, app.get_memory_format());
-                let lines: Vec<&str> = formatted.lines().take(visible_rows).collect();
+        // Add watchpoint legend at the top if any watchpoints are active
+        if !active_watchpoints.is_empty() {
+            rows.push(Line::from(Span::styled(
+                "Watchpoints in this region:",
+                Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD),
+            )));
+            
+            for wp in &active_watchpoints {
+                // Different colors based on watchpoint type
+                let wp_type_style = match wp.watchpoint_type() {
+                    crate::platform::WatchpointType::Read => 
+                        Style::default().fg(Color::Blue).add_modifier(Modifier::BOLD),
+                    crate::platform::WatchpointType::Write => 
+                        Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
+                    crate::platform::WatchpointType::ReadWrite => 
+                        Style::default().fg(Color::Magenta).add_modifier(Modifier::BOLD),
+                };
                 
-                let text: Vec<Line> = lines.into_iter()
-                    .map(Line::from)
-                    .collect();
+                let wp_type_text = match wp.watchpoint_type() {
+                    crate::platform::WatchpointType::Read => "READ",
+                    crate::platform::WatchpointType::Write => "WRITE",
+                    crate::platform::WatchpointType::ReadWrite => "READ/WRITE",
+                };
                 
-                let memory_paragraph = Paragraph::new(text)
-                    .style(Style::default().fg(Color::White))
-                    .block(Block::default());
-                
-                f.render_widget(memory_paragraph, inner_area);
-                return;
+                rows.push(Line::from(vec![
+                    Span::raw("  "),
+                    Span::styled(
+                        format!("{} watchpoint at 0x{:x} (size: {})", 
+                                wp_type_text, wp.address(), wp.size()),
+                        wp_type_style
+                    ),
+                ]));
             }
+            
+            // Add separator after watchpoint list
+            rows.push(Line::from(Span::raw("──────────────────────────────────────────────────────")));
         }
         
-        // Calculate total rows
-        let total_rows = data.len().div_ceil(bytes_per_row);
-        
-        // Prepare rows of text
-        let mut rows = Vec::with_capacity(visible_rows.min(total_rows));
-        
-        for row_idx in 0..visible_rows.min(total_rows) {
-            let row_address = memory_address + (row_idx * bytes_per_row) as u64;
-            let start_idx = row_idx * bytes_per_row;
-            let end_idx = (start_idx + bytes_per_row).min(data.len());
+        // Process each row of memory data
+        for (i, chunk) in data.chunks(bytes_per_row).enumerate() {
+            // ... existing code for generating row_address, hex_text, ascii_text ...
             
-            // Generate address column
-            let address_text = format!("{:016x}", row_address);
-            let _address_span = Line::from(vec![Span::styled(
-                address_text,
-                Style::default().fg(Color::Yellow),
-            )]);
+            // Check if any address in this row has a watchpoint
+            let row_address = memory_address + (i * bytes_per_row) as u64;
+            let row_end_address = row_address + chunk.len() as u64;
             
-            // Generate hex representation
-            let mut hex_text = String::with_capacity(bytes_per_row * 3);
-            let mut ascii_text = String::with_capacity(bytes_per_row);
-            let mut col_idx = 0;
+            // Create arrays to track which bytes are covered by which watchpoint types
+            let mut byte_watchpoints = vec![None; chunk.len()];
             
-            for byte in data.iter().take(end_idx).skip(start_idx) {
-                // Add hex value of the byte
-                hex_text.push_str(&format!("{:02x} ", byte));
+            // Check each byte for watchpoint coverage
+            for wp in &active_watchpoints {
+                let wp_start = wp.address();
+                let wp_end = wp_start + wp.size() as u64;
                 
-                // Add ASCII representation
-                if (32..=126).contains(byte) {
-                    ascii_text.push(*byte as char);
+                // Find bytes in this row that are covered by this watchpoint
+                for (byte_idx, _) in chunk.iter().enumerate() {
+                    let byte_addr = row_address + byte_idx as u64;
+                    if byte_addr >= wp_start && byte_addr < wp_end {
+                        byte_watchpoints[byte_idx] = Some(wp.watchpoint_type());
+                    }
+                }
+            }
+            
+            // Generate hex representation with per-byte watchpoint highlighting
+            let mut hex_text = String::new();
+            let mut hex_spans = Vec::new();
+            
+            for (byte_idx, byte) in chunk.iter().enumerate() {
+                let byte_text = format!("{:02x}", byte);
+                
+                if let Some(wp_type) = byte_watchpoints[byte_idx] {
+                    // Style based on watchpoint type
+                    let style = match wp_type {
+                        crate::platform::WatchpointType::Read => 
+                            Style::default().fg(Color::Blue).add_modifier(Modifier::BOLD),
+                        crate::platform::WatchpointType::Write => 
+                            Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
+                        crate::platform::WatchpointType::ReadWrite => 
+                            Style::default().fg(Color::Magenta).add_modifier(Modifier::BOLD),
+                    };
+                    
+                    hex_spans.push(Span::styled(byte_text.clone(), style));
                 } else {
-                    ascii_text.push('.');
+                    hex_spans.push(Span::styled(byte_text.clone(), Style::default().fg(Color::White)));
                 }
                 
-                // Add space after every 8 bytes
-                col_idx += 1;
-                if col_idx % 8 == 0 && col_idx < bytes_per_row {
-                    hex_text.push_str("  ");
+                if byte_idx < chunk.len() - 1 {
+                    hex_spans.push(Span::raw(" "));
                 }
+                hex_text.push_str(&format!("{:02x} ", byte));
             }
             
-            // Pad hex text if needed
-            if end_idx - start_idx < bytes_per_row {
-                for _ in 0..(bytes_per_row - (end_idx - start_idx)) {
-                    hex_text.push_str("   ");
-                    ascii_text.push(' ');
-                }
+            // Trim trailing space
+            if !hex_text.is_empty() {
+                hex_text.pop();
             }
             
-            // Create spans for the row
-            let _hex_span = Line::from(vec![Span::styled(
-                hex_text.clone(),
-                Style::default().fg(Color::White),
-            )]);
+            // Generate ASCII representation
+            let mut ascii_text = String::new();
+            let mut ascii_spans = Vec::new();
             
-            let _ascii_span = Line::from(vec![Span::styled(
-                ascii_text.clone(),
-                Style::default().fg(Color::Cyan),
-            )]);
+            for (byte_idx, &byte) in chunk.iter().enumerate() {
+                let c = if byte >= 32 && byte <= 126 {
+                    byte as char
+                } else {
+                    '.'
+                };
+                
+                if let Some(wp_type) = byte_watchpoints[byte_idx] {
+                    // Style based on watchpoint type
+                    let style = match wp_type {
+                        crate::platform::WatchpointType::Read => 
+                            Style::default().fg(Color::Blue).add_modifier(Modifier::BOLD),
+                        crate::platform::WatchpointType::Write => 
+                            Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
+                        crate::platform::WatchpointType::ReadWrite => 
+                            Style::default().fg(Color::Magenta).add_modifier(Modifier::BOLD),
+                    };
+                    
+                    ascii_spans.push(Span::styled(c.to_string(), style));
+                } else {
+                    ascii_spans.push(Span::styled(c.to_string(), Style::default().fg(Color::Cyan)));
+                }
+                
+                ascii_text.push(c);
+            }
             
-            // Combine spans into a row
-            let row = Line::from(vec![
-                Span::styled(format!("{:016x}", row_address), Style::default().fg(Color::Yellow)),
-                Span::raw(" | "),
-                Span::styled(hex_text.clone(), Style::default().fg(Color::White)),
-                Span::raw(" | "),
-                Span::styled(ascii_text.clone(), Style::default().fg(Color::Cyan)),
-            ]);
+            // Build row with all spans
+            let mut row_spans = Vec::new();
             
-            rows.push(row);
+            // Address (yellow)
+            row_spans.push(Span::styled(
+                format!("{:016x}", row_address),
+                Style::default().fg(Color::Yellow)
+            ));
+            
+            // Separator
+            row_spans.push(Span::raw(" | "));
+            
+            // Hex bytes with watchpoint highlighting
+            row_spans.extend(hex_spans);
+            
+            // Separator
+            row_spans.push(Span::raw(" | "));
+            
+            // ASCII with watchpoint highlighting
+            row_spans.extend(ascii_spans);
+            
+            // Add this row to our rows collection
+            rows.push(Line::from(row_spans));
         }
         
-        // Create paragraph with all rows
-        let memory_paragraph = Paragraph::new(rows)
-            .style(Style::default().fg(Color::White))
-            .block(Block::default());
-        
-        f.render_widget(memory_paragraph, inner_area);
+        // Add a legend at the bottom
+        rows.push(Line::from(Span::raw(""))); // Empty line as separator
+        rows.push(Line::from(vec![
+            Span::styled("READ", Style::default().fg(Color::Blue).add_modifier(Modifier::BOLD)),
+            Span::raw(" "),
+            Span::styled("WRITE", Style::default().fg(Color::Red).add_modifier(Modifier::BOLD)),
+            Span::raw(" "),
+            Span::styled("READ/WRITE", Style::default().fg(Color::Magenta).add_modifier(Modifier::BOLD)),
+            Span::raw(" watchpoints")
+        ]));
+
+        let paragraph = Paragraph::new(rows)
+            .block(block)
+            .wrap(Wrap { trim: true });
+
+        f.render_widget(paragraph, area);
     } else {
-        // No memory data available
-        let text = vec![
-            Line::from(vec![
-                Span::styled(
-                    "No memory data available.",
-                    Style::default().fg(Color::Red),
-                ),
-            ]),
-            Line::from(vec![
-                Span::styled(
-                    "Use 'memory <address> <size>' to view memory.",
-                    Style::default().fg(Color::Yellow),
-                ),
-            ]),
-        ];
-        
-        let help_para = Paragraph::new(text)
-            .style(Style::default())
-            .block(Block::default())
-            .alignment(Alignment::Center);
-        
-        f.render_widget(help_para, inner_area);
+        // No data, display a message
+        let text = vec![Line::from(vec![
+            Span::raw("No memory data available. Use 'memory <address> <size>' to view memory."),
+        ])];
+
+        let paragraph = Paragraph::new(text)
+            .block(block)
+            .wrap(Wrap { trim: true });
+
+        f.render_widget(paragraph, area);
     }
 }
 
@@ -1239,4 +1293,23 @@ pub fn draw_code_view<B: Backend>(f: &mut Frame<B>, area: Rect, lines: &[String]
         .highlight_style(Style::default().add_modifier(Modifier::BOLD));
     
     f.render_widget(list, area);
+}
+
+// Add a helper function to retrieve watchpoints for a memory range
+fn get_watchpoints_for_range(app: &App, start_addr: u64, end_addr: u64) -> Vec<Watchpoint> {
+    if let Some(debugger) = app.get_debugger().try_lock().ok() {
+        debugger.get_watchpoints()
+            .iter()
+            .filter(|wp| {
+                let wp_start = wp.address();
+                let wp_end = wp.address() + wp.size() as u64;
+                
+                // Check for overlap with the given range
+                wp_start <= end_addr && wp_end >= start_addr
+            })
+            .cloned()
+            .collect()
+    } else {
+        Vec::new()
+    }
 }
