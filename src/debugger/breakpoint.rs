@@ -604,6 +604,12 @@ pub struct WatchpointManager {
     next_id: usize,
 }
 
+impl Default for WatchpointManager {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl WatchpointManager {
     /// Create a new watchpoint manager
     pub fn new() -> Self {
