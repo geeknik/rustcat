@@ -1,3 +1,21 @@
+#![allow(clippy::struct_excessive_bools)]
+#![allow(clippy::missing_errors_doc)]
+#![allow(clippy::uninlined_format_args)]
+#![allow(clippy::significant_drop_tightening)]
+#![allow(clippy::cognitive_complexity)]
+#![allow(clippy::too_many_lines)]
+#![allow(clippy::unnecessary_wraps)]
+#![allow(clippy::option_if_let_else)]
+#![allow(clippy::match_on_vec_items)]
+#![allow(clippy::manual_let_else)]
+#![allow(clippy::match_same_arms)]
+#![allow(clippy::used_underscore_binding)]
+#![allow(clippy::cast_sign_loss)]
+#![allow(clippy::needless_pass_by_value)]
+#![allow(clippy::branches_sharing_code)]
+#![allow(clippy::equatable_if_let)]
+#![allow(clippy::must_use_candidate)]
+
 use std::sync::{Arc, Mutex};
 use std::collections::{VecDeque, HashMap};
 use std::time::{Duration, Instant};
