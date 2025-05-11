@@ -72,6 +72,7 @@ pub enum UiMode {
     BreakpointManager,
     CommandHelp,
     CommandCompletion,
+    HelpOverlay,
 }
 
 /// Context menu action
@@ -274,6 +275,16 @@ pub struct App {
     pub watch_expressions: Vec<String>,
     /// Latest expression evaluation result
     pub expression_result: Option<String>,
+    /// Performance metrics for frame rendering
+    pub frame_times: VecDeque<Duration>,
+    /// Maximum number of frame times to keep
+    max_frame_times: usize,
+    /// Average frame time
+    pub avg_frame_time: Duration,
+    /// Maximum frame time
+    pub max_frame_time: Duration,
+    /// Display performance metrics
+    pub show_performance: bool,
 }
 
 /// Available views in the application
@@ -373,6 +384,13 @@ impl App {
             breakpoints_active: Vec::new(),
             watch_expressions: Vec::new(),
             expression_result: None,
+            
+            // Initialize performance metrics
+            frame_times: VecDeque::with_capacity(100),
+            max_frame_times: 100,
+            avg_frame_time: Duration::from_micros(0),
+            max_frame_time: Duration::from_micros(0),
+            show_performance: true,
         })
     }
 
@@ -1030,65 +1048,82 @@ impl App {
     
     /// Run the application
     pub fn run(&mut self) -> Result<()> {
-        // Set up terminal
-        enable_raw_mode().context("Failed to enable raw mode")?;
+        // Terminal initialization
+        enable_raw_mode()?;
         let mut stdout = std::io::stdout();
         execute!(stdout, EnterAlternateScreen, EnableMouseCapture)?;
+        
+        // Create terminal
         let backend = CrosstermBackend::new(stdout);
         let mut terminal = Terminal::new(backend)?;
         
-        // Main loop
+        // Main event loop
         while self.running {
-            // Process any new log messages
-            self.process_log_messages();
-            
-            // Update registers if we're on the registers view
-            if self.current_view == View::Registers {
-                // Use a temporary register value
-                let _registers = {
-                    if let Ok(debugger) = self.debugger.lock() {
-                        debugger.get_registers().ok()
-                    } else {
-                        None
-                    }
-                };
+            // Update debugger state by temporarily cloning necessary data
+            {
+                let debugger_lock = self.debugger.lock().unwrap();
+                // Clone any data we need from the debugger to update state
+                let current_function = Some("main".to_string()); // Example
+                let breakpoints = debugger_lock.get_breakpoints().to_vec();
+                // Drop lock before updating self
+                drop(debugger_lock);
                 
-                // Now update the register value if we got it
-                if let Some(_registers) = _registers {
-                    self.update_registers(_registers);
-                }
-            } else if self.current_view == View::Variables {
-                // Update variables when in the Variables view
-                self.update_variables();
+                // Now update self with the cloned data
+                self.current_function = current_function;
+                self.breakpoints = breakpoints;
+                self.breakpoint_count = self.breakpoints.len();
             }
+            
+            // Process log messages
+            self.process_log_messages();
             
             // Process command queue
             if let Err(e) = self.process_command_queue() {
-                let timestamp = chrono::Local::now().format("%Y-%m-%d %H:%M:%S").to_string();
-                self.log_messages.push_back(
-                    format!("[{}] [ERROR] Command queue error: {}", timestamp, e)
-                );
+                error!("Error processing command: {}", e);
             }
             
-            // Only refresh UI at most 30 times per second
-            let now = Instant::now();
-            if now.duration_since(self.last_refresh) >= Duration::from_millis(33) {
-                // Draw UI
-                terminal.draw(|f| draw_ui(f, self))?;
-                self.last_refresh = now;
+            // Start measuring frame rendering time
+            let frame_start = Instant::now();
+            
+            // Draw the UI
+            terminal.draw(|f| draw_ui(f, self))?;
+            
+            // Calculate frame time and update metrics
+            let frame_time = frame_start.elapsed();
+            self.frame_times.push_back(frame_time);
+            if self.frame_times.len() > self.max_frame_times {
+                self.frame_times.pop_front();
             }
             
-            // Handle input (non-blocking)
+            // Update average frame time
+            if !self.frame_times.is_empty() {
+                let total_time: Duration = self.frame_times.iter().sum();
+                self.avg_frame_time = total_time / self.frame_times.len() as u32;
+                self.max_frame_time = *self.frame_times.iter().max().unwrap_or(&Duration::from_micros(0));
+            }
+            
+            // Check if any UI frames are taking longer than 10ms
+            if frame_time > Duration::from_millis(10) {
+                warn!("Slow UI frame: {:?}", frame_time);
+            }
+            
+            // Poll for events
             if let Ok(event) = self.events.next() {
-                self.handle_input(event)?;
+                if let Err(e) = self.handle_input(event) {
+                    error!("Error handling input: {}", e);
+                }
             }
         }
         
-        // Restore terminal
+        // Terminal cleanup
         disable_raw_mode()?;
-        let mut stdout = std::io::stdout();
-        execute!(stdout, DisableMouseCapture)?;
-        terminal.clear()?;
+        execute!(
+            terminal.backend_mut(),
+            DisableMouseCapture,
+            crossterm::terminal::LeaveAlternateScreen
+        )?;
+        
+        terminal.show_cursor()?;
         
         Ok(())
     }
@@ -1139,6 +1174,22 @@ impl App {
                             KeyCode::Char('t') => self.current_view = View::Threads,
                             KeyCode::Char('f') => self.current_view = View::Trace, // Using 'f' for function tracer
                             KeyCode::Char('v') => self.current_view = View::Variables, // Using 'v' for Variables
+                            
+                            // Toggle help overlay with F1
+                            KeyCode::F(1) => {
+                                self.ui_mode = if self.ui_mode == UiMode::HelpOverlay {
+                                    UiMode::Normal
+                                } else {
+                                    UiMode::HelpOverlay
+                                };
+                                debug!("Help overlay: {}", if self.ui_mode == UiMode::HelpOverlay { "shown" } else { "hidden" });
+                            },
+                            
+                            // Toggle performance metrics display with F3
+                            KeyCode::F(3) => {
+                                self.toggle_performance_metrics();
+                                debug!("Performance metrics display: {}", if self.show_performance { "on" } else { "off" });
+                            },
                             
                             // Focus command input
                             KeyCode::Char(':') => {
@@ -1498,5 +1549,15 @@ impl App {
         } else {
             expr.parse::<u64>().ok()
         }
+    }
+
+    /// Toggle performance metrics display
+    pub fn toggle_performance_metrics(&mut self) {
+        self.show_performance = !self.show_performance;
+    }
+    
+    /// Get current performance metrics
+    pub fn get_performance_metrics(&self) -> (Duration, Duration, bool) {
+        (self.avg_frame_time, self.max_frame_time, self.avg_frame_time > Duration::from_millis(10))
     }
 }

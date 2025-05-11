@@ -5,18 +5,26 @@
 
 use ratatui::{
     backend::Backend,
-    layout::{Constraint, Direction, Layout, Rect, Alignment},
+    layout::{Constraint, Direction, Layout, Rect, Alignment, Margin},
     style::{Color, Modifier, Style},
-    text::{Line, Span},
-    widgets::{Block, Borders, Padding, Tabs, Paragraph, BorderType, List, ListItem, ListState},
+    text::{Line, Span, Text},
+    widgets::{Block, Borders, Padding, Tabs, Paragraph, BorderType, List, ListItem, ListState, Table, Row, Cell, Clear, Wrap},
     symbols,
     Frame,
 };
 
 use std::sync::mpsc;
+use std::io;
 
-use crate::tui::app::{App, View, ActiveBlock, LogFilter};
+use anyhow::{Result, anyhow};
+use crossterm::event::{Event, KeyCode, KeyModifiers, MouseEventKind, MouseButton};
+use ratatui::Terminal;
+use log::{debug, info, error};
+
+use crate::tui::app::{App, View, ActiveBlock, LogFilter, UiMode};
 use crate::tui::views::{CodeView, CommandView, draw_memory_view, draw_thread_view, draw_call_stack_view, draw_registers_view, draw_trace_view, VariablesView};
+use crate::tui::events::Events;
+use crate::debugger::core::Debugger;
 
 /// Set up log capturing for UI display
 pub fn setup_log_capture() -> mpsc::Receiver<String> {
@@ -56,11 +64,12 @@ pub fn setup_log_capture() -> mpsc::Receiver<String> {
 
 /// Main UI drawing function
 pub fn draw_ui<B: Backend>(f: &mut Frame<B>, app: &mut App) {
-    // Create main layout with 4 parts:
+    // Create main layout with 5 parts:
     // 1. Title bar with tabs (top)
     // 2. Main content area (middle)
     // 3. Log area (resizable, below main)
-    // 4. Status bar (bottom)
+    // 4. Help bar (keyboard shortcuts)
+    // 5. Status bar (bottom)
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .margin(1)
@@ -68,6 +77,7 @@ pub fn draw_ui<B: Backend>(f: &mut Frame<B>, app: &mut App) {
             Constraint::Length(3),     // Title bar
             Constraint::Min(15),       // Main content
             Constraint::Length(7),     // Log view
+            Constraint::Length(3),     // Help bar
             Constraint::Length(3),     // Status bar
         ])
         .split(f.size());
@@ -81,8 +91,23 @@ pub fn draw_ui<B: Backend>(f: &mut Frame<B>, app: &mut App) {
     // Draw log area
     draw_log_area(f, app, chunks[2]);
     
+    // Draw help bar
+    draw_help_bar(f, app, chunks[3]);
+    
     // Draw status bar
-    draw_status_bar(f, app, chunks[3]);
+    draw_status_bar(f, app, chunks[4]);
+    
+    // Draw help overlay if in help mode
+    if app.ui_mode == UiMode::HelpOverlay {
+        draw_help_overlay(f, app);
+    }
+    
+    // Draw context menu if active
+    if app.ui_mode == UiMode::ContextMenu {
+        if let Some(position) = app.context_menu_position {
+            draw_context_menu(f, app, position);
+        }
+    }
 }
 
 /// Draw the title bar with tabs
@@ -299,62 +324,315 @@ fn draw_log_area<B: Backend>(f: &mut Frame<B>, app: &mut App, area: Rect) {
     f.render_stateful_widget(logs, area, &mut log_state);
 }
 
-/// Draw the status bar with enhanced information
+/// Draw a help bar with context-sensitive keyboard shortcuts
+fn draw_help_bar<B: Backend>(f: &mut Frame<B>, app: &App, area: Rect) {
+    // Get context-sensitive key bindings based on current view and active block
+    let help_text = match (app.current_view, app.active_block) {
+        (_, ActiveBlock::CommandInput) => 
+            "[Esc] Cancel | [↑/↓] History | [Enter] Execute | [Tab] Autocomplete",
+            
+        (_, ActiveBlock::LogView) => 
+            "[↑/↓] Scroll | [PgUp/PgDn] Page | [Ctrl+F] Search | [Ctrl+N/P] Next/Prev | [Ctrl+L] Filter",
+            
+        (View::Code, _) => 
+            "[F1] Help | [F3] Toggle Perf | [g] Go/Continue | [b] Breakpoint | [s] Step | [n] Next | [Space] Disassemble",
+            
+        (View::Memory, _) => 
+            "[F1] Help | [F3] Toggle Perf | [Enter] Go to Address | [Tab] Cycle View | [+/-] Zoom | [m] Format",
+            
+        (View::Registers, _) => 
+            "[F1] Help | [F3] Toggle Perf | [Tab] Group | [↑/↓] Select | [Enter] Edit | [r] Refresh",
+            
+        (View::Stack, _) => 
+            "[F1] Help | [F3] Toggle Perf | [↑/↓] Select Frame | [Enter] Jump to Frame | [Space] Show Variables",
+            
+        (View::Threads, _) => 
+            "[F1] Help | [F3] Toggle Perf | [↑/↓] Select | [Enter] Switch | [Space] Suspend/Resume | [k] Kill",
+            
+        (View::Trace, _) => 
+            "[F1] Help | [F3] Toggle Perf | [↑/↓] Navigate | [c] Clear | [f] Filter | [s] Save | [Space] Collapse/Expand",
+            
+        (View::Variables, _) => 
+            "[F1] Help | [F3] Toggle Perf | [↑/↓] Select | [Enter] Expand | [w] Watch | [e] Edit | [Space] Show Memory",
+            
+        (View::Command, _) => 
+            "[F1] Help | [F3] Toggle Perf | [↑/↓] History | [Tab] Complete | [Ctrl+C] Clear | [Enter] Execute",
+    };
+    
+    // Create the paragraph widget
+    let help_paragraph = Paragraph::new(Line::from(vec![
+        Span::styled(help_text, Style::default().fg(Color::White))
+    ]))
+    .block(Block::default().borders(Borders::ALL).title("Keyboard Shortcuts"))
+    .alignment(Alignment::Center);
+    
+    // Render the help bar
+    f.render_widget(help_paragraph, area);
+}
+
+/// Draw the status bar
 fn draw_status_bar<B: Backend>(f: &mut Frame<B>, app: &mut App, area: Rect) {
-    // Create the status indicators
-    let status_style = if app.program_running {
-        Style::default().fg(Color::Green)
-    } else {
-        Style::default().fg(Color::Red)
+    // Create a layout with two columns for status information
+    let chunks = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([
+            Constraint::Percentage(70), // Left side (main status)
+            Constraint::Percentage(30), // Right side (performance metrics)
+        ])
+        .split(area);
+    
+    // Prepare the left side with debugger status
+    let status = format!(
+        "Status: {} | Process: {} | Function: {} | Breakpoints: {}",
+        if app.program_running { "Running" } else { "Stopped" },
+        app.process_id.map_or_else(|| "N/A".to_string(), |pid| pid.to_string()),
+        app.current_function.as_deref().unwrap_or("N/A"),
+        app.breakpoint_count
+    );
+    
+    let status_paragraph = Paragraph::new(Line::from(vec![
+        Span::styled(status, Style::default().fg(Color::White))
+    ]))
+    .block(Block::default().borders(Borders::ALL).padding(Padding::new(1, 0, 0, 0)))
+    .alignment(Alignment::Left);
+    
+    // Draw the left status bar
+    f.render_widget(status_paragraph, chunks[0]);
+    
+    // Prepare the right side with performance metrics (if enabled)
+    if app.show_performance {
+        let (avg_time, max_time, is_slow) = app.get_performance_metrics();
+        
+        // Convert durations to milliseconds with 2 decimal places
+        let avg_ms = avg_time.as_secs_f64() * 1000.0;
+        let max_ms = max_time.as_secs_f64() * 1000.0;
+        
+        // Choose color based on performance
+        let perf_color = if is_slow { 
+            Color::Red 
+        } else if avg_ms > 5.0 { 
+            Color::Yellow 
+        } else { 
+            Color::Green 
+        };
+        
+        let perf_text = format!("UI: {:.2}ms (max: {:.2}ms)", avg_ms, max_ms);
+        
+        let perf_paragraph = Paragraph::new(Line::from(vec![
+            Span::styled(perf_text, Style::default().fg(perf_color))
+        ]))
+        .block(Block::default().borders(Borders::ALL).padding(Padding::new(1, 0, 0, 0)))
+        .alignment(Alignment::Right);
+        
+        // Draw the right status bar
+        f.render_widget(perf_paragraph, chunks[1]);
+    }
+}
+
+/// Draw a help overlay with detailed usage instructions
+fn draw_help_overlay<B: Backend>(f: &mut Frame<B>, app: &App) {
+    // Create a centered window for the help overlay
+    let area = centered_rect(80, 60, f.size());
+    
+    // Define help content based on current view
+    let title = format!("Help for {} View", view_to_string(app.current_view));
+    
+    let help_content: Vec<String> = match app.current_view {
+        View::Code => vec![
+            "CODE VIEW SHORTCUTS:".to_string(),
+            "  F1: Toggle this help overlay".to_string(),
+            "  F3: Toggle performance metrics".to_string(),
+            "  1-8: Switch between views".to_string(),
+            "  c: Switch to code view".to_string(),
+            "  b: Set/clear breakpoint at cursor".to_string(),
+            "  g: Continue execution".to_string(),
+            "  n: Step over".to_string(),
+            "  s: Step into".to_string(),
+            "  f: Step out".to_string(),
+            "  Space: Toggle disassembly at cursor".to_string(),
+            "".to_string(),
+            "DEBUGGER COMMANDS:".to_string(),
+            "  break <location>: Set breakpoint".to_string(),
+            "  continue: Resume execution".to_string(),
+            "  step: Step into".to_string(),
+            "  next: Step over".to_string(),
+            "  finish: Step out".to_string(),
+            "  run: Start execution".to_string(),
+            "  quit: Exit debugger".to_string(),
+        ],
+        View::Memory => vec![
+            "MEMORY VIEW SHORTCUTS:".to_string(),
+            "  F1: Toggle this help overlay".to_string(),
+            "  F3: Toggle performance metrics".to_string(),
+            "  1-8: Switch between views".to_string(),
+            "  m: Switch to memory view".to_string(),
+            "  Up/Down: Scroll through memory".to_string(),
+            "  Left/Right: Change columns".to_string(),
+            "  +/-: Zoom in/out".to_string(),
+            "  Tab: Cycle display format (Hex/ASCII/Int)".to_string(),
+            "  Enter: Go to specific address".to_string(),
+            "  Space: Mark memory region".to_string(),
+            "".to_string(),
+            "COMMANDS:".to_string(),
+            "  memory <addr> <size>: View memory at address".to_string(),
+            "  x/<size><format> <addr>: Examine memory".to_string(),
+            "  watch <addr>: Set watchpoint".to_string(),
+        ],
+        View::Registers => vec![
+            "REGISTER VIEW SHORTCUTS:".to_string(),
+            "  F1: Toggle this help overlay".to_string(),
+            "  F3: Toggle performance metrics".to_string(),
+            "  1-8: Switch between views".to_string(),
+            "  r: Switch to register view".to_string(),
+            "  Tab: Cycle register groups (General/Special/SIMD)".to_string(),
+            "  Up/Down: Select register".to_string(),
+            "  Enter: Edit selected register".to_string(),
+            "  Space: Show memory at register address".to_string(),
+            "".to_string(),
+            "COMMANDS:".to_string(),
+            "  registers: Show registers".to_string(),
+            "  set $reg=value: Set register value".to_string(),
+        ],
+        _ => vec![
+            format!("{} VIEW HELP", view_to_string(app.current_view).to_uppercase()),
+            "  F1: Toggle this help overlay".to_string(),
+            "  F3: Toggle performance metrics".to_string(),
+            "  1-8: Switch between views".to_string(),
+            "  Tab: Switch focus between panels".to_string(),
+            "  q: Quit application".to_string(),
+            "".to_string(),
+            "Press F1 again to close this help overlay".to_string()
+        ],
     };
     
-    let program_status = if app.program_running { "Running" } else { "Stopped" };
+    // Create the help text
+    let help_text: Vec<Line> = help_content.into_iter()
+        .map(|line| {
+            if line.starts_with("  ") {
+                // Indent means it's a detail, use normal color
+                Line::from(Span::styled(line, Style::default().fg(Color::White)))
+            } else if line.is_empty() {
+                // Empty line for spacing
+                Line::from("")
+            } else {
+                // Heading, use bright color
+                Line::from(Span::styled(line, Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)))
+            }
+        })
+        .collect();
     
-    // Count active breakpoints
-    let breakpoint_count = app.breakpoint_count;
-    let breakpoint_style = if breakpoint_count > 0 {
-        Style::default().fg(Color::Yellow)
-    } else {
-        Style::default().fg(Color::Gray)
-    };
+    // Create the overlay
+    let help_paragraph = Paragraph::new(help_text)
+        .block(Block::default()
+            .title(title)
+            .borders(Borders::ALL)
+            .border_type(BorderType::Rounded))
+        .alignment(Alignment::Left)
+        .wrap(Wrap { trim: true });
     
-    // Add function info if available
-    let function_info = if let Some(func) = &app.current_function {
-        func.to_string()
-    } else {
-        "No function".to_string()
-    };
+    // Create a clear background
+    let background = Block::default()
+        .style(Style::default().bg(Color::Black).fg(Color::White));
     
-    // Add keyboard shortcuts based on context
-    let help_text = match app.active_block {
-        ActiveBlock::MainView => "[q]uit | [Tab]switch panel | [g]o | [b]reakpoint | [s]tep | [n]ext | [r]un",
-        ActiveBlock::CommandInput => "[Esc]cancel | [Enter]submit",
-        ActiveBlock::LogView => "[q]uit | [Tab]switch panel | [↑/↓]scroll logs",
-    };
+    f.render_widget(Clear, area); // Clear the area first
+    f.render_widget(background, area); // Render semi-transparent background
+    f.render_widget(help_paragraph, area.inner(&Margin { vertical: 2, horizontal: 4 })); // Render help with margins
+}
+
+/// Helper function to convert View enum to string
+fn view_to_string(view: View) -> String {
+    match view {
+        View::Code => "Code".to_string(),
+        View::Memory => "Memory".to_string(),
+        View::Registers => "Registers".to_string(),
+        View::Stack => "Stack".to_string(),
+        View::Threads => "Threads".to_string(),
+        View::Command => "Command".to_string(),
+        View::Trace => "Trace".to_string(),
+        View::Variables => "Variables".to_string(),
+    }
+}
+
+/// Helper function to create a centered rect
+fn centered_rect(percent_x: u16, percent_y: u16, r: Rect) -> Rect {
+    let popup_layout = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Percentage((100 - percent_y) / 2),
+            Constraint::Percentage(percent_y),
+            Constraint::Percentage((100 - percent_y) / 2),
+        ])
+        .split(r);
+
+    Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([
+            Constraint::Percentage((100 - percent_x) / 2),
+            Constraint::Percentage(percent_x),
+            Constraint::Percentage((100 - percent_x) / 2),
+        ])
+        .split(popup_layout[1])[1]
+}
+
+/// Draw context menu at a specific position
+fn draw_context_menu<B: Backend>(f: &mut Frame<B>, app: &App, position: (u16, u16)) {
+    // Create menu items based on current menu
+    let items: Vec<String> = app.context_menu_items.iter()
+        .map(|action| {
+            match action {
+                crate::tui::app::ContextMenuAction::SetBreakpoint => "Set Breakpoint".to_string(),
+                crate::tui::app::ContextMenuAction::ClearBreakpoint => "Clear Breakpoint".to_string(),
+                crate::tui::app::ContextMenuAction::RunToCursor => "Run To Cursor".to_string(),
+                crate::tui::app::ContextMenuAction::Copy => "Copy".to_string(),
+                crate::tui::app::ContextMenuAction::ViewMemory(_) => "View Memory".to_string(),
+                crate::tui::app::ContextMenuAction::SaveToFile => "Save To File".to_string(),
+                crate::tui::app::ContextMenuAction::Submenu(name, _) => format!("{} ▶", name),
+            }
+        })
+        .collect();
     
-    let text = vec![
-        Line::from(vec![
-            Span::styled(format!("Status: {}", program_status), status_style),
-            Span::raw(" | "),
-            Span::styled(format!("BP: {}", breakpoint_count), breakpoint_style),
-            Span::raw(" | "),
-            Span::raw(format!("Func: {}", function_info)),
-            Span::raw(" | "),
-            Span::raw(format!("PID: {}", app.process_id.unwrap_or(0))),
-        ]),
-        Line::from(vec![
-            Span::styled(help_text, Style::default().fg(Color::White)),
-        ]),
-    ];
+    // Determine menu width based on longest item
+    let width = items.iter()
+        .map(|s| s.len() as u16)
+        .max()
+        .unwrap_or(15)
+        .max(15) + 4; // Minimum width of 15 plus padding
     
-    let paragraph = Paragraph::new(text)
-        .block(
-            Block::default()
-                .borders(Borders::ALL)
-                .border_type(BorderType::Rounded)
-                .padding(Padding::new(1, 0, 0, 0))
-        )
-        .style(Style::default().fg(Color::White));
+    let height = (items.len() as u16) + 2; // +2 for borders
     
-    f.render_widget(paragraph, area);
+    // Ensure the menu stays within the terminal bounds
+    let (mut x, mut y) = position;
+    let term_size = f.size();
+    
+    if x + width > term_size.width {
+        x = term_size.width - width - 1;
+    }
+    
+    if y + height > term_size.height {
+        y = term_size.height - height - 1;
+    }
+    
+    let menu_area = Rect::new(x, y, width, height);
+    
+    // Create the menu
+    let menu_items: Vec<Line> = items.iter()
+        .enumerate()
+        .map(|(i, item)| {
+            let style = if i == app.context_menu_selected {
+                Style::default().fg(Color::Black).bg(Color::White)
+            } else {
+                Style::default().fg(Color::White)
+            };
+            
+            Line::from(Span::styled(item, style))
+        })
+        .collect();
+    
+    let menu = Paragraph::new(menu_items)
+        .block(Block::default().borders(Borders::ALL).border_type(BorderType::Plain))
+        .style(Style::default().bg(Color::DarkGray));
+    
+    // Render the menu
+    f.render_widget(Clear, menu_area);
+    f.render_widget(menu, menu_area);
 } 
