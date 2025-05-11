@@ -4,6 +4,12 @@
 
 A MacOS-Only, Rust-Based, Fast-as-Hell Native Debugger
 
+## Compatibility
+
+- **Primary Platform**: macOS (Apple Silicon optimized)
+- **Linux**: Builds are provided for compatibility testing only
+- **Windows**: Not supported
+
 ## TL;DR
 
 You're staring down the future of native code debugging on macOS ARM64. RUSTCAT is not a gdb wrapper. It is not a hacked lldb clone. It is a from-scratch debugger built for speed, terminal warriors, and modern machines. ClickHouse-sized workloads? Handled. Real-time updates? You bet. UI freezes? Not in this house.
@@ -178,3 +184,7 @@ All security tests are automatically run via GitHub Actions to prevent regressio
 ## 📄 License
 
 MIT License
+
+![macOS](https://github.com/geeknik/rustcat/actions/workflows/macos.yml/badge.svg)
+![Linux Compat](https://github.com/geeknik/rustcat/actions/workflows/linux.yml/badge.svg)
+![Security](https://github.com/geeknik/rustcat/actions/workflows/security_tests.yml/badge.svg)

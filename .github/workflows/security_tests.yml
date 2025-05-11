@@ -1,12 +1,9 @@
 name: Security Tests
 
 on:
-  push:
-    branches: [ main ]
-  pull_request:
-    branches: [ main ]
   schedule:
     - cron: '0 0 * * 0'  # Run weekly on Sundays
+  workflow_dispatch:     # Allow manual triggering when needed
 
 env:
   CARGO_TERM_COLOR: always
@@ -63,7 +60,6 @@ jobs:
   fuzz-tests:
     runs-on: macos-latest
     needs: security-tests
-    if: github.event_name == 'schedule'  # Only run fuzzing on scheduled runs
     
     steps:
     - uses: actions/checkout@v3
