@@ -35,14 +35,34 @@ echo ""
 # 4. Run a quick fuzz test on critical components
 echo "🧪 Step 4: Running quick fuzz tests"
 
-# Install cargo-fuzz if not already installed
-if ! command -v cargo-fuzz &> /dev/null; then
+# Make fuzzing optional since it's not always available
+FUZZING_AVAILABLE=false
+
+# Check if cargo-fuzz is installed
+if command -v cargo-fuzz &> /dev/null; then
+    # Check if we're on nightly (required for fuzzing)
+    if rustc --version | grep -q nightly; then
+        # Check if the fuzzing component is available
+        if rustup component list | grep -q "fuzzing.*installed"; then
+            FUZZING_AVAILABLE=true
+        else
+            echo "⚠️  Fuzzing component not available in the current nightly"
+            echo "Skipping fuzzing tests - not a critical failure"
+        fi
+    else
+        echo "⚠️  Skipping fuzzing - requires nightly Rust"
+        echo "To run fuzz tests, switch to nightly with:"
+        echo "  rustup default nightly"
+    fi
+else
     echo "Installing cargo-fuzz..."
-    cargo install cargo-fuzz
+    cargo install cargo-fuzz || {
+        echo "⚠️  Failed to install cargo-fuzz. Skipping fuzzing tests."
+    }
 fi
 
-# Check if we're on nightly (required for fuzzing)
-if rustc --version | grep -q nightly; then
+# Only run fuzzing if everything is set up correctly
+if [ "$FUZZING_AVAILABLE" = true ]; then
     # Run each fuzzer for a short duration (5 seconds each)
     echo "Running memory_fuzz for 5 seconds..."
     timeout 5s cargo fuzz run memory_fuzz || echo "Fuzzing completed or timed out"
@@ -53,9 +73,7 @@ if rustc --version | grep -q nightly; then
     echo "Running dwarf_fuzz for 5 seconds..."
     timeout 5s cargo fuzz run dwarf_fuzz || echo "Fuzzing completed or timed out"
 else
-    echo "⚠️  Skipping fuzzing - requires nightly Rust"
-    echo "To run fuzz tests, switch to nightly with:"
-    echo "  rustup default nightly"
+    echo "⚠️  Fuzzing tests skipped - continuing with other checks"
 fi
 echo ""
 
