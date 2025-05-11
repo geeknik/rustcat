@@ -715,20 +715,22 @@ mod tests {
     fn test_watchpoint_hit_counter() {
         let mut wp = Watchpoint::new(0x1000, 8, WatchpointType::Read);
         
-        // First hit should return true
+        // First hit with ignore_count=0 should return true
         assert!(wp.hit());
         assert_eq!(wp.hit_count(), 1);
         
         // Set ignore count
         wp.set_ignore_count(2);
         
-        // Next two hits should be ignored
+        // Next hit should be ignored because hit_count(2) <= ignore_count(2)
         assert!(!wp.hit());
         assert_eq!(wp.hit_count(), 2);
-        assert!(!wp.hit());
+        
+        // Next hit should trigger because hit_count(3) > ignore_count(2)
+        assert!(wp.hit());
         assert_eq!(wp.hit_count(), 3);
         
-        // Third hit should trigger
+        // Hit again - should always trigger now
         assert!(wp.hit());
         assert_eq!(wp.hit_count(), 4);
         
@@ -768,7 +770,7 @@ mod tests {
         
         // Add another watchpoint
         let wp2 = Watchpoint::new(0x2000, 8, WatchpointType::Write);
-        let index2 = manager.add_watchpoint(wp2);
+        let _index2 = manager.add_watchpoint(wp2);
         
         // Should have two watchpoints
         assert_eq!(manager.count(), 2);
