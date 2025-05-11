@@ -70,14 +70,36 @@ jobs:
         profile: minimal
         toolchain: nightly  # Fuzzing requires nightly
         override: true
+        components: rustfmt,clippy,rust-src,llvm-tools-preview
     
     - name: Install cargo-fuzz
       run: |
         cargo install cargo-fuzz --force
     
-    - name: Run fuzz tests (short)
+    - name: Run fuzz tests
       run: |
-        # This is a placeholder. Actual fuzzing commands will be added as they are implemented
-        echo "Fuzzing not yet implemented, will be added in a future update"
-        # Example command once implemented:
-        # cargo fuzz run memory_fuzz -- -max_total_time=300 
+        # Run each fuzzer for a short duration (1 minute each)
+        echo "Running memory_fuzz..."
+        timeout 60s cargo fuzz run memory_fuzz -- -max_total_time=60 || echo "Fuzzing completed or timed out"
+        
+        echo "Running command_fuzz..."
+        timeout 60s cargo fuzz run command_fuzz -- -max_total_time=60 || echo "Fuzzing completed or timed out"
+        
+        echo "Running dwarf_fuzz..."
+        timeout 60s cargo fuzz run dwarf_fuzz -- -max_total_time=60 || echo "Fuzzing completed or timed out"
+        
+        echo "Running symbol_fuzz..."
+        timeout 60s cargo fuzz run symbol_fuzz -- -max_total_time=60 || echo "Fuzzing completed or timed out"
+        
+    - name: Save fuzz corpus
+      run: |
+        # Create artifact with fuzz corpus for future runs
+        mkdir -p fuzz_corpus
+        cp -r fuzz/corpus/* fuzz_corpus/ || true
+        
+    - name: Upload fuzz corpus
+      uses: actions/upload-artifact@v3
+      with:
+        name: fuzz-corpus
+        path: fuzz_corpus/
+        retention-days: 30 

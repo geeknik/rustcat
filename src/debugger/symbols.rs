@@ -1,13 +1,16 @@
 use std::collections::BTreeMap;
 use std::path::Path;
+use std::collections::HashMap;
 
 use anyhow::{anyhow, Result};
 use goblin::Object;
-use log::{debug, warn};
+use log::{debug, warn, info};
 use cpp_demangle::Symbol as CppSymbol;
+// We'll use the cpp_demangle crate for Rust symbols too until we add rustc_demangle
+// use rustc_demangle::demangle as rust_demangle;
 
 /// Symbol type classification
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum SymbolType {
     /// Function
     Function,
@@ -40,6 +43,60 @@ impl SymbolType {
     }
 }
 
+/// Programming language of the symbol
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Language {
+    /// C language
+    C,
+    /// C++ language
+    Cpp,
+    /// Rust language
+    Rust,
+    /// Swift language
+    Swift,
+    /// Objective-C language
+    ObjectiveC,
+    /// Unknown language
+    Unknown,
+}
+
+impl Language {
+    /// Convert to string representation
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::C => "C",
+            Self::Cpp => "C++",
+            Self::Rust => "Rust",
+            Self::Swift => "Swift",
+            Self::ObjectiveC => "Objective-C",
+            Self::Unknown => "Unknown",
+        }
+    }
+    
+    /// Detect language from symbol name
+    pub fn detect_from_name(name: &str) -> Self {
+        if name.starts_with("_Z") || name.starts_with("__Z") {
+            // Itanium C++ ABI mangling
+            Self::Cpp
+        } else if name.starts_with("__") && name.contains("$_") {
+            // Microsoft Visual C++ mangling
+            Self::Cpp
+        } else if name.starts_with("_R") {
+            // Rust symbol mangling
+            Self::Rust
+        } else if name.starts_with("__swift") {
+            // Swift symbols
+            Self::Swift
+        } else if name.starts_with("+[") || name.starts_with("-[") {
+            // Objective-C method
+            Self::ObjectiveC
+        } else {
+            // Default to C
+            Self::C
+        }
+    }
+}
+
 /// Represents a symbol in the binary
 #[derive(Debug, Clone)]
 pub struct Symbol {
@@ -59,6 +116,12 @@ pub struct Symbol {
     line: Option<u32>,
     /// Symbol visibility (public, private, etc.)
     visibility: Option<String>,
+    /// Section name (if known)
+    section: Option<String>,
+    /// Language (C, C++, Rust, etc.)
+    language: Option<Language>,
+    /// Symbol binding (local, global, weak)
+    binding: Option<String>,
 }
 
 impl Symbol {
@@ -72,16 +135,35 @@ impl Symbol {
         line: Option<u32>,
         visibility: Option<String>,
     ) -> Self {
-        // Try to demangle C++ symbol names
-        let demangled_name = if name.starts_with("_Z") || name.starts_with("__Z") {
-            // This looks like a mangled C++ name, try to demangle it
-            let mangled_part = if name.starts_with("__Z") { &name[1..] } else { &name };
-            match CppSymbol::new(mangled_part) {
-                Ok(demangled) => Some(demangled.to_string()),
-                Err(_) => None,
-            }
-        } else {
-            None
+        // Detect language from symbol name
+        let language = Language::detect_from_name(&name);
+        
+        // Try to demangle based on detected language
+        let demangled_name = match language {
+            Language::Cpp => {
+                if name.starts_with("_Z") || name.starts_with("__Z") {
+                    // This looks like a mangled C++ name (Itanium ABI), try to demangle it
+                    let mangled_part = if name.starts_with("__Z") { &name[1..] } else { &name };
+                    match CppSymbol::new(mangled_part) {
+                        Ok(demangled) => Some(demangled.to_string()),
+                        Err(_) => None,
+                    }
+                } else if name.starts_with("?") {
+                    // Microsoft Visual C++ mangling
+                    // Note: We would need a MSVC demangler here
+                    // For now, we'll just return None
+                    None
+                } else {
+                    None
+                }
+            },
+            Language::Rust => {
+                // For Rust symbols, we'd typically use rustc_demangle
+                // But for now, we'll just leave the name as is
+                // We'll add proper Rust demangling in a future update
+                None
+            },
+            _ => None,
         };
         
         Self {
@@ -93,7 +175,40 @@ impl Symbol {
             source_file,
             line,
             visibility,
+            section: None,
+            language: Some(language),
+            binding: None,
         }
+    }
+    
+    /// Create a new symbol with additional information
+    pub fn new_with_details(
+        name: String,
+        address: u64,
+        size: Option<u64>,
+        symbol_type: SymbolType,
+        source_file: Option<String>,
+        line: Option<u32>,
+        visibility: Option<String>,
+        section: Option<String>,
+        binding: Option<String>,
+    ) -> Self {
+        // Create basic symbol first
+        let mut symbol = Self::new(
+            name,
+            address,
+            size,
+            symbol_type,
+            source_file,
+            line,
+            visibility,
+        );
+        
+        // Add additional details
+        symbol.section = section;
+        symbol.binding = binding;
+        
+        symbol
     }
     
     /// Get the symbol name
@@ -144,6 +259,104 @@ impl Symbol {
     pub fn visibility(&self) -> Option<&str> {
         self.visibility.as_deref()
     }
+    
+    /// Get the section name
+    pub fn section(&self) -> Option<&str> {
+        self.section.as_deref()
+    }
+    
+    /// Get the symbol language
+    pub fn language(&self) -> Option<Language> {
+        self.language
+    }
+    
+    /// Get the binding type
+    pub fn binding(&self) -> Option<&str> {
+        self.binding.as_deref()
+    }
+    
+    /// Set the section name
+    pub fn set_section(&mut self, section: Option<String>) {
+        self.section = section;
+    }
+    
+    /// Set the binding type
+    pub fn set_binding(&mut self, binding: Option<String>) {
+        self.binding = binding;
+    }
+}
+
+/// Represents a section in the binary
+#[derive(Debug, Clone)]
+pub struct Section {
+    /// Section name
+    pub name: String,
+    /// Section address
+    pub address: u64,
+    /// Section size
+    pub size: u64,
+    /// Section flags
+    pub flags: u64,
+    /// Is this section executable?
+    pub is_executable: bool,
+    /// Is this section writable?
+    pub is_writable: bool,
+    /// Is this section in memory?
+    pub is_allocated: bool,
+}
+
+impl Section {
+    /// Create a new section
+    pub fn new(name: String, address: u64, size: u64, flags: u64) -> Self {
+        // Determine section attributes based on flags
+        // These flags are different for each binary format
+        // For simplicity, we'll just check if certain bits are set
+        // In a real implementation, we'd have format-specific logic
+        let is_executable = (flags & 0x1) != 0;
+        let is_writable = (flags & 0x2) != 0;
+        let is_allocated = (flags & 0x4) != 0;
+        
+        Self {
+            name,
+            address,
+            size,
+            flags,
+            is_executable,
+            is_writable,
+            is_allocated,
+        }
+    }
+    
+    /// Check if an address is within this section
+    pub fn contains(&self, address: u64) -> bool {
+        address >= self.address && address < (self.address + self.size)
+    }
+    
+    /// Get a human-readable description of the section
+    pub fn description(&self) -> String {
+        let mut attributes = Vec::new();
+        
+        if self.is_executable {
+            attributes.push("execute");
+        }
+        
+        if self.is_writable {
+            attributes.push("write");
+        }
+        
+        if self.is_allocated {
+            attributes.push("alloc");
+        }
+        
+        format!(
+            "{}: 0x{:x}-0x{:x} ({} bytes) [{}]",
+            self.name,
+            self.address,
+            self.address + self.size,
+            self.size,
+            attributes.join(", ")
+        )
+    }
 }
 
 /// Symbol table for the target program
@@ -154,6 +367,10 @@ pub struct SymbolTable {
     by_name: BTreeMap<String, u64>,
     /// Demangled names to address mapping
     by_demangled_name: BTreeMap<String, u64>,
+    /// Address range index for fast range lookup
+    address_ranges: Vec<(u64, u64, u64)>,  // (start, end, symbol_address)
+    /// Symbol name prefix index for autocomplete
+    name_prefix_index: BTreeMap<String, Vec<u64>>,
     /// Loading progress
     loading_progress: Option<f32>,
     /// Loading status
@@ -162,6 +379,10 @@ pub struct SymbolTable {
     architecture: Option<String>,
     /// Binary format
     binary_format: Option<String>,
+    /// Sections in the binary
+    sections: Vec<Section>,
+    /// Symbol count by type
+    symbol_counts: HashMap<SymbolType, usize>,
 }
 
 impl SymbolTable {
@@ -171,19 +392,27 @@ impl SymbolTable {
             by_address: BTreeMap::new(),
             by_name: BTreeMap::new(),
             by_demangled_name: BTreeMap::new(),
+            address_ranges: Vec::new(),
+            name_prefix_index: BTreeMap::new(),
             loading_progress: None,
             loading_status: "Not loaded".to_string(),
             architecture: None,
             binary_format: None,
+            sections: Vec::new(),
+            symbol_counts: HashMap::new(),
         }
     }
     
     /// Load symbols from a file
     pub fn load_from_file<P: AsRef<Path>>(&mut self, path: P) -> Result<()> {
-        // Clear existing symbols
+        // Clear existing symbols and state
         self.by_address.clear();
         self.by_name.clear();
         self.by_demangled_name.clear();
+        self.address_ranges.clear();
+        self.name_prefix_index.clear();
+        self.sections.clear();
+        self.symbol_counts.clear();
         
         self.loading_progress = Some(0.0);
         self.loading_status = "Loading file...".to_string();
@@ -235,6 +464,16 @@ impl SymbolTable {
             _ => return Err(anyhow!("Unsupported binary format")),
         }
         
+        // Log symbol statistics
+        info!("Loaded {} symbols from {}", self.by_address.len(), path.as_ref().display());
+        for (symbol_type, count) in &self.symbol_counts {
+            info!("  {}: {}", symbol_type.as_str(), count);
+        }
+        
+        info!("Found {} sections", self.sections.len());
+        let exec_sections = self.sections.iter().filter(|s| s.is_executable).count();
+        info!("  Executable sections: {}", exec_sections);
+        
         self.loading_progress = Some(1.0);
         self.loading_status = format!("Loaded {} symbols", self.by_address.len());
         
@@ -279,121 +518,132 @@ impl SymbolTable {
         self.loading_progress = Some(0.2);
         self.loading_status = "Loading Mach-O symbols...".to_string();
         
+        // Load sections first
+        self.loading_progress = Some(0.3);
+        self.loading_status = "Loading Mach-O sections...".to_string();
+        
+        // Process sections from each segment
+        for segment in &macho.segments {
+            debug!("Processing segment: {} (sections: {})", segment.name()?, segment.nsects);
+            
+            for section_result in segment.sections()? {
+                if let Ok((section_header, _)) = section_result {
+                    let name = section_header.name()?;
+                    let address = section_header.addr as u64;
+                    let size = section_header.size;
+                    
+                    // Parse flags to determine section attributes
+                    let flags = section_header.flags as u64;
+                    
+                    // Add to our section list
+                    self.sections.push(Section::new(
+                        name.to_string(),
+                        address,
+                        size,
+                        flags
+                    ));
+                    
+                    debug!("Added section: {} at 0x{:x} ({} bytes)", name, address, size);
+                }
+            }
+        }
+        
         // Load symbols from symbol table
-        if let Some(symbols) = &macho.symbols {
-            let total = symbols.iter().count();
-            for (i, symbol_result) in symbols.iter().enumerate() {
-                if let Ok((name, nlist)) = symbol_result {
-                    let addr_value = nlist.n_value;
-                    if addr_value > 0 {
-                        // Determine symbol type based on nlist n_type and n_sect fields
-                        let symbol_type = if (nlist.n_type & 0x0e) == 0x0e {
-                            // N_SECT | N_EXT | N_PEXT (defined in section, global visibility)
-                            if nlist.n_sect == 1 {
-                                // __TEXT section usually contains functions
-                                SymbolType::Function 
+        self.loading_progress = Some(0.4);
+        self.loading_status = "Loading Mach-O symbols...".to_string();
+        
+        // We can't directly get the count of symbols, so we'll process them without a progress update
+        for symbol_result in macho.symbols.iter() {
+            if let Ok((name, nlist)) = symbol_result {
+                // Skip some system symbols
+                if name.starts_with("__") || name.is_empty() {
+                    continue;
+                }
+                
+                let address = nlist.n_value;
+                
+                // Determine symbol type
+                let symbol_type = match nlist.n_type & 0x0e {  // Type mask
+                    0x0e => SymbolType::Function,  // N_SECT with N_EXT in TEXT section
+                    0x02 => SymbolType::GlobalVariable,  // N_EXT with no N_SECT
+                    _ => {
+                        // If in a text section, likely a function
+                        if let Some(section_idx) = nlist.get_sect_idx() {
+                            if section_idx > 0 && section_idx <= self.sections.len() as u8 {
+                                let section = &self.sections[section_idx as usize - 1];
+                                if section.is_executable {
+                                    SymbolType::Function
+                                } else {
+                                    SymbolType::Data
+                                }
                             } else {
-                                // Other sections usually contain data
-                                SymbolType::GlobalVariable
-                            }
-                        } else if (nlist.n_type & 0x0e) == 0x06 {
-                            // N_SECT (defined in section, static visibility)
-                            if nlist.n_sect == 1 {
-                                SymbolType::Function
-                            } else {
-                                SymbolType::StaticVariable
+                                SymbolType::Other
                             }
                         } else {
                             SymbolType::Other
-                        };
-                        
-                        // Determine visibility
-                        let visibility = if (nlist.n_type & 0x01) != 0 {
-                            // N_EXT bit set means global/external
-                            Some("global".to_string())
-                        } else {
-                            Some("local".to_string())
-                        };
-                        
-                        let symbol = Symbol::new(
-                            name.to_string(),
-                            addr_value,
-                            None, // Size not available from mach-o symbols
-                            symbol_type,
-                            None, // Source file info would require DWARF parsing
-                            None, // Line info would require DWARF parsing
-                            visibility,
-                        );
-                        
-                        self.add_symbol(symbol);
+                        }
                     }
-                }
+                };
                 
-                if i % 1000 == 0 {
-                    self.loading_progress = Some(0.7f32.mul_add(i as f32 / total as f32, 0.2));
-                    self.loading_status = format!("Loaded {}/{} symbols", i, total);
-                }
-            }
-        }
-        
-        // Load code sections and function starts
-        // Handle the Result from segment.name() properly
-        for segment in &macho.segments {
-            if let Ok(name) = segment.name() {
-                if name.starts_with("__TEXT") {
-                    // Using simplified section handling compatible with goblin 0.7.1
-                    debug!("Found __TEXT segment at 0x{:x}", segment.vmaddr);
-                    
-                    // In a production debugger, we'd examine the sections more carefully
-                    // but for now, we'll focus on getting symbols working
-                }
-            }
-        }
-        
-        // Try to parse function starts if available
-        // Note: goblin 0.7.1 doesn't expose function_starts directly
-        // We'll handle this differently by detecting functions from symbols
-        let text_base = macho.segments
-            .iter().find_map(|s| s.name().ok().filter(|n| n.starts_with("__TEXT")).map(|_| s.vmaddr))
-            .unwrap_or(0);
-            
-        // Function detection is now primarily done through the symbol table
-        let mut function_starts = Vec::new();
-        
-        // Extract potential function start addresses from symbols
-        if let Some(symbols) = &macho.symbols {
-            for (_, sym) in symbols.iter().flatten() {
-                // Check if it's a function symbol (in __TEXT section)
-                if (sym.n_type & 0x0e) == 0x0e && sym.n_sect == 1 && sym.n_value > 0 {
-                    let offset = sym.n_value - text_base;
-                    function_starts.push(offset);
-                }
-            }
-        }
-            
-        for (i, start) in function_starts.iter().enumerate() {
-            let addr = text_base + start;
-            
-            // Only add unnamed functions if they aren't already in our symbol table
-            if !self.by_address.contains_key(&addr) {
-                let symbol = Symbol::new(
-                    format!("sub_{:x}", addr),
-                    addr,
-                    None,
-                    SymbolType::Function,
-                    None,
-                    None,
-                    Some("local".to_string()),
+                // Determine visibility
+                let visibility = if (nlist.n_type & 0x01) != 0 {  // N_EXT bit
+                    Some("global".to_string())
+                } else {
+                    Some("local".to_string())
+                };
+                
+                // Get section name
+                let section_name = if let Some(section_idx) = nlist.get_sect_idx() {
+                    if section_idx > 0 && section_idx <= self.sections.len() as u8 {
+                        Some(self.sections[section_idx as usize - 1].name.clone())
+                    } else {
+                        None
+                    }
+                } else {
+                    None
+                };
+                
+                // Determine binding
+                let binding = if (nlist.n_desc & 0x10) != 0 {  // N_WEAK_REF bit
+                    Some("weak".to_string())
+                } else if (nlist.n_type & 0x01) != 0 {  // N_EXT bit
+                    Some("global".to_string())
+                } else {
+                    Some("local".to_string())
+                };
+                
+                // Create the symbol
+                let symbol = Symbol::new_with_details(
+                    name.to_string(),
+                    address,
+                    None,  // Size not directly available
+                    symbol_type,
+                    None,  // Source file
+                    None,  // Line number
+                    visibility,
+                    section_name,
+                    binding,
                 );
                 
+                // Add the symbol
                 self.add_symbol(symbol);
             }
-            
-            if i % 1000 == 0 && !function_starts.is_empty() {
-                self.loading_progress = Some(0.1f32.mul_add(i as f32 / function_starts.len() as f32, 0.9));
-                self.loading_status = format!("Processing function starts {}/{}", i, function_starts.len());
-            }
         }
+        
+        // Load dynamic symbols (from export trie if available)
+        self.loading_progress = Some(0.7);
+        self.loading_status = "Loading Mach-O dynamic symbols...".to_string();
+        
+        // We'll skip exports for now, as they're not directly accessible in the current goblin API
+        // We'll have to come back to this later
+        
+        // Build indices after loading all symbols
+        self.loading_progress = Some(0.9);
+        self.loading_status = "Building indices...".to_string();
+        self.build_indices();
+        
+        self.loading_progress = Some(1.0);
+        self.loading_status = format!("Loaded {} Mach-O symbols", self.by_address.len());
         
         Ok(())
     }
@@ -403,130 +653,207 @@ impl SymbolTable {
         self.loading_progress = Some(0.2);
         self.loading_status = "Loading ELF symbols...".to_string();
         
-        // Load symbols from symbol table
-        let total = elf.syms.len();
-        for (i, sym) in elf.syms.iter().enumerate() {
-            if sym.st_value > 0 {
-                // Skip empty symbols
-                if let Some(name) = elf.strtab.get_at(sym.st_name) {
-                    if !name.is_empty() {
-                        // Determine symbol type
-                        let symbol_type = match sym.st_type() {
-                            goblin::elf::sym::STT_FUNC => SymbolType::Function,
-                            goblin::elf::sym::STT_OBJECT => {
-                                if (sym.st_info >> 4) == goblin::elf::sym::STB_GLOBAL {
-                                    SymbolType::GlobalVariable
-                                } else {
-                                    SymbolType::StaticVariable
-                                }
-                            },
-                            goblin::elf::sym::STT_SECTION => SymbolType::Text, // Could be data too
-                            _ => SymbolType::Other,
-                        };
-                        
-                        // Determine visibility
-                        let bind = sym.st_info >> 4;
-                        let visibility = if bind == goblin::elf::sym::STB_GLOBAL {
-                            Some("global".to_string())
-                        } else if bind == goblin::elf::sym::STB_LOCAL {
-                            Some("local".to_string())
-                        } else if bind == goblin::elf::sym::STB_WEAK {
-                            Some("weak".to_string()) 
-                        } else {
-                            None
-                        };
-                        
-                        let symbol = Symbol::new(
-                            name.to_string(),
-                            sym.st_value,
-                            Some(sym.st_size),
-                            symbol_type,
-                            None, // Source file info would require DWARF parsing
-                            None, // Line info would require DWARF parsing
-                            visibility,
-                        );
-                        
-                        self.add_symbol(symbol);
-                    }
+        // Load sections first
+        self.loading_progress = Some(0.3);
+        self.loading_status = "Loading ELF sections...".to_string();
+        
+        for section in &elf.section_headers {
+            if let Some(name) = elf.shdr_strtab.get_at(section.sh_name) {
+                // Skip sections with empty names
+                if name.is_empty() {
+                    continue;
                 }
-            }
-            
-            if i % 1000 == 0 {
-                self.loading_progress = Some(0.7f32.mul_add(i as f32 / total as f32, 0.2));
-                self.loading_status = format!("Loaded {}/{} symbols", i, total);
+                
+                let address = section.sh_addr;
+                let size = section.sh_size;
+                let flags = section.sh_flags;
+                
+                // Add to our section list
+                self.sections.push(Section::new(
+                    name.to_string(),
+                    address,
+                    size,
+                    flags
+                ));
+                
+                debug!("Added section: {} at 0x{:x} ({} bytes)", name, address, size);
             }
         }
         
-        // Also load dynamic symbols
-        let total_dynsyms = elf.dynsyms.len();
-        for (i, sym) in elf.dynsyms.iter().enumerate() {
-            if sym.st_value > 0 {
-                // Skip empty symbols
-                if let Some(name) = elf.dynstrtab.get_at(sym.st_name) {
-                    if !name.is_empty() && !self.by_name.contains_key(name) {
-                        // Determine symbol type
-                        let symbol_type = match sym.st_type() {
-                            goblin::elf::sym::STT_FUNC => SymbolType::Function,
-                            goblin::elf::sym::STT_OBJECT => {
-                                if (sym.st_info >> 4) == goblin::elf::sym::STB_GLOBAL {
-                                    SymbolType::GlobalVariable
-                                } else {
-                                    SymbolType::StaticVariable
-                                }
-                            },
-                            _ => SymbolType::Other,
-                        };
-                        
-                        // Determine visibility
-                        let bind = sym.st_info >> 4;
-                        let visibility = if bind == goblin::elf::sym::STB_GLOBAL {
-                            Some("global".to_string())
-                        } else if bind == goblin::elf::sym::STB_LOCAL {
-                            Some("local".to_string())
-                        } else if bind == goblin::elf::sym::STB_WEAK {
-                            Some("weak".to_string()) 
-                        } else {
-                            None
-                        };
-                        
-                        let symbol = Symbol::new(
-                            name.to_string(),
-                            sym.st_value,
-                            Some(sym.st_size),
-                            symbol_type,
-                            None,
-                            None,
-                            visibility,
-                        );
-                        
-                        self.add_symbol(symbol);
-                    }
+        // Load symbols from symbol tables
+        self.loading_progress = Some(0.4);
+        self.loading_status = "Loading ELF symbols...".to_string();
+        
+        // Process a symbol from either the static or dynamic symbol table
+        let process_symbol = |sym: &goblin::elf::Sym, strtab: &goblin::strtab::Strtab, is_dynamic: bool| {
+            if let Some(name) = strtab.get_at(sym.st_name) {
+                // Skip empty names or special indices
+                if name.is_empty() || sym.st_shndx == 0 {
+                    return;
                 }
+                
+                let address = sym.st_value;
+                let size = if sym.st_size > 0 { Some(sym.st_size) } else { None };
+                
+                // Determine symbol type
+                let symbol_type = match goblin::elf::sym::st_type(sym.st_info) {
+                    goblin::elf::sym::STT_FUNC => SymbolType::Function,
+                    goblin::elf::sym::STT_OBJECT => SymbolType::GlobalVariable,
+                    goblin::elf::sym::STT_SECTION => SymbolType::Other, // Skip section symbols
+                    goblin::elf::sym::STT_FILE => SymbolType::Other,    // Skip file symbols
+                    _ => {
+                        // Check the section for additional context
+                        let section_idx = sym.st_shndx as usize;
+                        if section_idx < self.sections.len() {
+                            let section = &self.sections[section_idx];
+                            if section.is_executable {
+                                SymbolType::Function
+                            } else {
+                                SymbolType::Data
+                            }
+                        } else {
+                            SymbolType::Other
+                        }
+                    }
+                };
+                
+                // Skip section and file symbols
+                if symbol_type == SymbolType::Other && 
+                   (goblin::elf::sym::st_type(sym.st_info) == goblin::elf::sym::STT_SECTION ||
+                    goblin::elf::sym::st_type(sym.st_info) == goblin::elf::sym::STT_FILE) {
+                    return;
+                }
+                
+                // Determine visibility
+                let bind = goblin::elf::sym::st_bind(sym.st_info);
+                let visibility = match bind {
+                    goblin::elf::sym::STB_GLOBAL => Some("global".to_string()),
+                    goblin::elf::sym::STB_LOCAL => Some("local".to_string()),
+                    goblin::elf::sym::STB_WEAK => Some("weak".to_string()),
+                    _ => None,
+                };
+                
+                // Get section name
+                let section_idx = sym.st_shndx as usize;
+                let section_name = if section_idx < self.sections.len() {
+                    Some(self.sections[section_idx].name.clone())
+                } else {
+                    None
+                };
+                
+                // Determine binding for consistency with Mach-O
+                let binding = match bind {
+                    goblin::elf::sym::STB_GLOBAL => Some("global".to_string()),
+                    goblin::elf::sym::STB_LOCAL => Some("local".to_string()),
+                    goblin::elf::sym::STB_WEAK => Some("weak".to_string()),
+                    _ => None,
+                };
+                
+                // Create the symbol
+                let symbol = Symbol::new_with_details(
+                    name.to_string(),
+                    address,
+                    size,
+                    symbol_type,
+                    None,  // Source file
+                    None,  // Line number
+                    visibility,
+                    section_name,
+                    binding,
+                );
+                
+                // Add the symbol
+                self.add_symbol(symbol);
+            }
+        };
+        
+        // Process regular symbols
+        let symbol_count = elf.syms.len();
+        for (i, sym) in elf.syms.iter().enumerate() {
+            // Update progress every 100 symbols
+            if i % 100 == 0 || i == symbol_count - 1 {
+                let progress = 0.4 + 0.2 * (i as f32 / symbol_count as f32);
+                self.loading_progress = Some(progress);
+                self.loading_status = format!("Loading ELF symbols... {}/{}", i + 1, symbol_count);
             }
             
-            if i % 1000 == 0 {
-                self.loading_progress = Some(0.1f32.mul_add(i as f32 / total_dynsyms as f32, 0.9));
-                self.loading_status = format!("Loaded {}/{} dynamic symbols", i, total_dynsyms);
-            }
+            process_symbol(&sym, &elf.strtab, false);
         }
+        
+        // Process dynamic symbols
+        self.loading_progress = Some(0.6);
+        self.loading_status = "Loading ELF dynamic symbols...".to_string();
+        
+        let dynsym_count = elf.dynsyms.len();
+        for (i, sym) in elf.dynsyms.iter().enumerate() {
+            // Update progress every 100 symbols
+            if i % 100 == 0 || i == dynsym_count - 1 {
+                let progress = 0.6 + 0.2 * (i as f32 / dynsym_count as f32);
+                self.loading_progress = Some(progress);
+                self.loading_status = format!("Loading ELF dynamic symbols... {}/{}", i + 1, dynsym_count);
+            }
+            
+            process_symbol(&sym, &elf.dynstrtab, true);
+        }
+        
+        // Build indices after loading all symbols
+        self.loading_progress = Some(0.9);
+        self.loading_status = "Building indices...".to_string();
+        self.build_indices();
+        
+        self.loading_progress = Some(1.0);
+        self.loading_status = format!("Loaded {} ELF symbols", self.by_address.len());
         
         Ok(())
     }
     
-    /// Add a symbol to the symbol table
+    /// Add a symbol to the table
     fn add_symbol(&mut self, symbol: Symbol) {
-        let addr = symbol.address();
+        let address = symbol.address();
         let name = symbol.name().to_string();
+        let symbol_type = symbol.symbol_type();
         
-        // Add to address map
-        self.by_address.insert(addr, symbol.clone());
+        // Update symbol count by type
+        *self.symbol_counts.entry(symbol_type).or_insert(0) += 1;
         
-        // Add to name map (only if not already present or if this is a better symbol)
-        self.by_name.entry(name).or_insert(addr);
+        // Add to address index
+        self.by_address.insert(address, symbol.clone());
         
-        // Add to demangled name map if available
-        if let Some(demangled) = &symbol.demangled_name {
-            self.by_demangled_name.entry(demangled.clone()).or_insert(addr);
+        // Add to name index
+        self.by_name.insert(name.clone(), address);
+        
+        // Add to demangled name index if available
+        if let Some(demangled) = symbol.demangled_name.as_ref() {
+            self.by_demangled_name.insert(demangled.clone(), address);
+            
+            // Also add name prefixes for demangled name
+            self.add_name_prefixes(demangled, address);
+        }
+        
+        // Add name prefixes for raw name
+        self.add_name_prefixes(&name, address);
+        
+        // Add to address range index
+        if let Some(size) = symbol.size() {
+            let end_address = address + size;
+            self.address_ranges.push((address, end_address, address));
+        }
+    }
+    
+    /// Add name prefixes for autocompletion
+    fn add_name_prefixes(&mut self, name: &str, address: u64) {
+        // We'll add prefixes of length 3 or more for efficiency
+        if name.len() < 3 {
+            return;
+        }
+        
+        // Add prefixes (min length 3) to the prefix index
+        for len in 3..=name.len() {
+            let prefix = name[..len].to_string();
+            self.name_prefix_index
+                .entry(prefix)
+                .or_insert_with(Vec::new)
+                .push(address);
         }
     }
     
@@ -535,19 +862,47 @@ impl SymbolTable {
         self.by_address.get(&address)
     }
     
-    /// Find a symbol by address range (within the symbol's range if size is known)
+    /// Find a symbol by address range
     pub fn find_by_address_range(&self, address: u64) -> Option<&Symbol> {
-        // First try exact match
-        if let Some(symbol) = self.by_address.get(&address) {
+        // First, try to find an exact match (fastest)
+        if let Some(symbol) = self.find_by_address(address) {
             return Some(symbol);
         }
         
-        // Try range-based lookup
-        for symbol in self.by_address.values() {
-            if let Some(size) = symbol.size {
-                if address >= symbol.address && address < symbol.address + size {
-                    return Some(symbol);
+        // Check our address range index using binary search
+        if !self.address_ranges.is_empty() {
+            // Binary search would be ideal, but tricky with overlapping ranges.
+            // For simplicity, we'll use a linear search in our pre-built range list.
+            for &(start, end, sym_addr) in &self.address_ranges {
+                if address >= start && address < end {
+                    return self.by_address.get(&sym_addr);
                 }
+            }
+        }
+        
+        // As a fallback, check for containing section and find closest symbol
+        if let Some(section) = self.find_section_by_address(address) {
+            // Get all symbols in this section
+            let section_symbols: Vec<(&u64, &Symbol)> = self.by_address.iter()
+                .filter(|(_, sym)| sym.section.as_ref().map_or(false, |s| s == &section.name))
+                .collect();
+            
+            if !section_symbols.is_empty() {
+                // Find the closest symbol before the address
+                let mut closest_sym = None;
+                let mut closest_distance = u64::MAX;
+                
+                for (&sym_addr, sym) in &section_symbols {
+                    if sym_addr <= address {
+                        let distance = address - sym_addr;
+                        if distance < closest_distance {
+                            closest_distance = distance;
+                            closest_sym = Some(*sym);
+                        }
+                    }
+                }
+                
+                return closest_sym;
             }
         }
         
@@ -601,6 +956,172 @@ impl SymbolTable {
     pub fn binary_format(&self) -> Option<&str> {
         self.binary_format.as_deref()
     }
+    
+    /// Find symbols by name prefix (for autocompletion)
+    pub fn find_by_prefix(&self, prefix: &str) -> Vec<&Symbol> {
+        if prefix.len() < 3 {
+            // For short prefixes, scan the entire list for efficiency
+            return self.by_name.iter()
+                .filter(|(name, _)| name.starts_with(prefix))
+                .filter_map(|(_, &addr)| self.by_address.get(&addr))
+                .collect();
+        }
+        
+        // Use the prefix index for longer prefixes
+        if let Some(addresses) = self.name_prefix_index.get(prefix) {
+            return addresses.iter()
+                .filter_map(|&addr| self.by_address.get(&addr))
+                .collect();
+        }
+        
+        // Try to find the longest matching prefix
+        let mut matching_prefix = prefix[..3].to_string();
+        for len in 4..=prefix.len() {
+            let candidate = &prefix[..len];
+            if self.name_prefix_index.contains_key(candidate) {
+                matching_prefix = candidate.to_string();
+            } else {
+                break;
+            }
+        }
+        
+        // If we found a partial match, filter the results
+        if let Some(addresses) = self.name_prefix_index.get(&matching_prefix) {
+            return addresses.iter()
+                .filter_map(|&addr| self.by_address.get(&addr))
+                .filter(|sym| sym.name().starts_with(prefix) || 
+                               sym.demangled_name.as_ref().map_or(false, |n| n.starts_with(prefix)))
+                .collect();
+        }
+        
+        Vec::new()
+    }
+    
+    /// Find a symbol that contains the given address within its range
+    pub fn find_containing_symbol(&self, address: u64) -> Option<&Symbol> {
+        // First, try the exact address lookup for speed
+        if let Some(symbol) = self.find_by_address(address) {
+            return Some(symbol);
+        }
+        
+        // Next, check the address ranges
+        for &(start, end, symbol_addr) in &self.address_ranges {
+            if address >= start && address < end {
+                return self.by_address.get(&symbol_addr);
+            }
+        }
+        
+        // Finally, do a linear search through all symbols with size
+        for (sym_addr, symbol) in &self.by_address {
+            if let Some(size) = symbol.size() {
+                let end_addr = *sym_addr + size;
+                if address >= *sym_addr && address < end_addr {
+                    return Some(symbol);
+                }
+            }
+        }
+        
+        None
+    }
+    
+    /// Get all symbols of a specific type
+    pub fn get_symbols_by_type(&self, symbol_type: SymbolType) -> Vec<&Symbol> {
+        self.by_address.values()
+            .filter(|sym| sym.symbol_type() == symbol_type)
+            .collect()
+    }
+    
+    /// Get a section by address
+    pub fn find_section_by_address(&self, address: u64) -> Option<&Section> {
+        self.sections.iter()
+            .find(|section| section.contains(address))
+    }
+    
+    /// Get all sections
+    pub fn get_all_sections(&self) -> &[Section] {
+        &self.sections
+    }
+    
+    /// Get executable sections
+    pub fn get_executable_sections(&self) -> Vec<&Section> {
+        self.sections.iter()
+            .filter(|section| section.is_executable)
+            .collect()
+    }
+    
+    /// Get statistics about the symbol table
+    pub fn get_statistics(&self) -> HashMap<String, usize> {
+        let mut stats = HashMap::new();
+        
+        // Overall count
+        stats.insert("total".to_string(), self.by_address.len());
+        
+        // Count by type
+        for (symbol_type, count) in &self.symbol_counts {
+            stats.insert(symbol_type.as_str().to_string(), *count);
+        }
+        
+        // Sections count
+        stats.insert("sections".to_string(), self.sections.len());
+        
+        stats
+    }
+    
+    /// Build indices for fast lookups
+    fn build_indices(&mut self) {
+        // Clear existing indices
+        self.address_ranges.clear();
+        self.name_prefix_index.clear();
+        
+        // Rebuild address ranges
+        let address_ranges: Vec<(u64, u64, u64)> = self.by_address.iter()
+            .filter_map(|(&addr, symbol)| {
+                symbol.size().map(|size| (addr, addr + size, addr))
+            })
+            .collect();
+        
+        // Add all the collected ranges to our index
+        self.address_ranges.extend(address_ranges);
+        
+        // Create temporary collections for name prefixes
+        let mut name_prefixes: Vec<(String, u64)> = Vec::new();
+        
+        // Collect name prefixes from raw names
+        for (name, &addr) in &self.by_name {
+            // Add prefixes of length 3 or more for efficiency
+            if name.len() >= 3 {
+                for len in 3..=name.len() {
+                    let prefix = name[..len].to_string();
+                    name_prefixes.push((prefix, addr));
+                }
+            }
+        }
+        
+        // Collect name prefixes from demangled names
+        for (name, &addr) in &self.by_demangled_name {
+            // Add prefixes of length 3 or more for efficiency
+            if name.len() >= 3 {
+                for len in 3..=name.len() {
+                    let prefix = name[..len].to_string();
+                    name_prefixes.push((prefix, addr));
+                }
+            }
+        }
+        
+        // Now add all collected prefixes to our index
+        for (prefix, addr) in name_prefixes {
+            self.name_prefix_index
+                .entry(prefix)
+                .or_insert_with(Vec::new)
+                .push(addr);
+        }
+        
+        // Sort address ranges for binary search
+        self.address_ranges.sort_unstable_by_key(|&(start, _, _)| start);
+        
+        debug!("Built indices: {} address ranges, {} name prefixes", 
+            self.address_ranges.len(), self.name_prefix_index.len());
+    }
 }
 
 impl Default for SymbolTable {
@@ -608,3 +1129,4 @@ impl Default for SymbolTable {
         Self::new()
     }
 }
+

@@ -1,28 +1,59 @@
 #![no_main]
 
+use arbitrary::Arbitrary;
 use libfuzzer_sys::fuzz_target;
-use rustcat::platform::dwarf::{parse_dwarf_info, DwarfInfo};
+use std::fs::File;
+use std::io::Write;
+use std::path::PathBuf;
 
-fuzz_target!(|data: &[u8]| {
-    // We're not parsing real ELF/DWARF data here because that would require a more
-    // complex setup. This is a placeholder to demonstrate the structure.
+// Make it easier to import the module
+use rustcat::debugger::symbols::{SymbolTable, Symbol, SymbolType};
+
+#[derive(Arbitrary, Debug)]
+struct DwarfFuzzInput {
+    // The raw binary data to fuzz with
+    data: Vec<u8>,
+    // Flags to test different behaviors
+    try_as_elf: bool,
+    try_as_macho: bool,
+    try_as_pe: bool,
+}
+
+fuzz_target!(|input: DwarfFuzzInput| {
+    // Prepare a temporary file
+    let temp_dir = std::env::temp_dir();
+    let file_path = temp_dir.join(format!("dwarf_fuzz_{}.bin", std::process::id()));
     
-    // In a real implementation, we would:
-    // 1. Create a temporary file with the fuzzed data
-    // 2. Try to parse it as an object file
-    // 3. Extract and parse DWARF information
-    
-    // For now, just test the public API to ensure it doesn't crash
-    // with various inputs
-    if data.len() > 4 {
-        // Create a mock DwarfInfo struct
-        let mock_info = DwarfInfo {
-            // Fill with some data from the fuzzed input
-            file_path: String::from_utf8_lossy(&data[0..4]).to_string(),
-            ..Default::default()
-        };
-        
-        // Just ensure the struct can be created and destroyed without issues
-        drop(mock_info);
+    // Write the fuzzed data to the file
+    if let Ok(mut file) = File::create(&file_path) {
+        // Only proceed if we can create the file
+        if let Ok(_) = file.write_all(&input.data) {
+            // Try to parse as a symbol table
+            let mut symbol_table = SymbolTable::new();
+            
+            // Don't let errors crash the fuzzer
+            let _ = symbol_table.load_from_file(&file_path);
+            
+            // Try a few operations on the symbol table to ensure they're safe
+            if !symbol_table.is_empty() {
+                // Try to find a symbol at various addresses
+                for addr in [0, 1, 100, 0x1000, 0x10000, 0xFFFFFFFF, 0xFFFFFFFFFFFFFFFF] {
+                    let _ = symbol_table.find_by_address(addr);
+                    let _ = symbol_table.find_by_address_range(addr);
+                }
+                
+                // Try to find symbols by name
+                let _ = symbol_table.find_by_name("main");
+                let _ = symbol_table.find_by_prefix("ma");
+                
+                // Try different symbol types
+                for symbol_type in [SymbolType::Function, SymbolType::GlobalVariable, SymbolType::StaticVariable] {
+                    let _ = symbol_table.find_by_type(symbol_type);
+                }
+            }
+        }
     }
+    
+    // Clean up the temporary file
+    let _ = std::fs::remove_file(file_path);
 }); 

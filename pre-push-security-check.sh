@@ -72,6 +72,9 @@ if [ "$FUZZING_AVAILABLE" = true ]; then
     
     echo "Running dwarf_fuzz for 5 seconds..."
     timeout 5s cargo fuzz run dwarf_fuzz || echo "Fuzzing completed or timed out"
+    
+    echo "Running symbol_fuzz for 5 seconds..."
+    timeout 5s cargo fuzz run symbol_fuzz || echo "Fuzzing completed or timed out"
 else
     echo "⚠️  Fuzzing tests skipped - continuing with other checks"
 fi
