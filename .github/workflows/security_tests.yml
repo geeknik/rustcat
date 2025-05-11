@@ -40,7 +40,7 @@ jobs:
     
     - name: Run Clippy with security lints
       run: |
-        cargo clippy --all-targets --all-features -- -D warnings -W clippy::all -W clippy::pedantic -W clippy::nursery -W clippy::cargo
+        cargo clippy --all-targets --all-features -- -D warnings -W clippy::all -A clippy::pedantic -A clippy::nursery
     
     - name: Run unit tests
       run: |

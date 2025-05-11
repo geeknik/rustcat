@@ -44,4 +44,4 @@ jobs:
 
     - name: Clippy lints
       run: |
-        cargo clippy --all-targets -- -A clippy::all 
+        cargo clippy --all-targets -- -A clippy::all -A clippy::pedantic -A clippy::nursery 
