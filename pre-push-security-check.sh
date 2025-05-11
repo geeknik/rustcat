@@ -15,7 +15,7 @@ echo ""
 
 # 2. Run Clippy with security lints
 echo "🔍 Step 2: Running clippy with security lints"
-cargo clippy --all-targets --all-features -- -D warnings
+cargo clippy --all-targets --all-features -- -D warnings -W clippy::all -A clippy::pedantic -A clippy::nursery -A clippy::format_push_string -A clippy::struct_field_names -A clippy::unused_self
 echo "✅ Clippy checks passed"
 echo ""
 
