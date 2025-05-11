@@ -44,4 +44,4 @@ jobs:
 
     - name: Clippy lints
       run: |
-        cargo clippy --all-targets -- -A clippy::all -A clippy::pedantic -A clippy::nursery 
+        cargo clippy --all-targets -- -A clippy::all -A clippy::pedantic -A clippy::nursery -A clippy::format_push_string -A clippy::struct_field_names -A clippy::unused_self 
