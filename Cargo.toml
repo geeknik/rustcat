@@ -22,7 +22,7 @@ windows-targets = "=0.52.6"
 # Parsing libraries
 gimli = "0.31.1"
 object = "0.36.7"
-goblin = "0.7.1"
+goblin = "0.9.3"
 libc = "0.2.172"
 cpp_demangle = "0.4.3"
 
@@ -39,6 +39,7 @@ env_logger = "0.10.0"
 byteorder = "1.4.3"
 regex = "1.11.1"
 chrono = { version = "0.4.41", default-features = false, features = ["std", "clock"] }
+bitflags = "2.9.0"
 
 # Platform-specific dependencies
 [target.'cfg(target_os = "macos")'.dependencies]
@@ -54,8 +55,9 @@ grcov = "0.8.19"         # Coverage reporting
 cargo-llvm-cov = "0.5.39" # LLVM coverage
 
 [features]
-default = []
+default = ["debug_symbols"]
 debug_symbols = []
+macho = []
 
 [profile.release]
 lto = true

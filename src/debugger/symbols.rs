@@ -7,9 +7,23 @@ use std::io::Read;
 use anyhow::{anyhow, Result};
 use log::{debug, warn, info};
 use cpp_demangle::Symbol as CppSymbol;
-use object::SectionFlags;
 // We'll use the cpp_demangle crate for Rust symbols too until we add rustc_demangle
 // use rustc_demangle::demangle as rust_demangle;
+
+// Add bitflags! macro for SectionFlags
+bitflags::bitflags! {
+    /// Flags for section properties
+    pub struct SectionFlags: u64 {
+        /// Section contains executable code
+        const EXECUTABLE = 0x01;
+        /// Section contains readable data
+        const READABLE = 0x02;
+        /// Section contains writable data
+        const WRITABLE = 0x04;
+        /// Section is loaded in memory
+        const ALLOCATED = 0x08;
+    }
+}
 
 /// Symbol type classification
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
