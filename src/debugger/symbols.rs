@@ -5,25 +5,12 @@ use std::fs::File;
 use std::io::Read;
 
 use anyhow::{anyhow, Result};
+use goblin::Object;
 use log::{debug, warn, info};
 use cpp_demangle::Symbol as CppSymbol;
 // We'll use the cpp_demangle crate for Rust symbols too until we add rustc_demangle
 // use rustc_demangle::demangle as rust_demangle;
-
-// Add bitflags! macro for SectionFlags
-bitflags::bitflags! {
-    /// Flags for section properties
-    pub struct SectionFlags: u64 {
-        /// Section contains executable code
-        const EXECUTABLE = 0x01;
-        /// Section contains readable data
-        const READABLE = 0x02;
-        /// Section contains writable data
-        const WRITABLE = 0x04;
-        /// Section is loaded in memory
-        const ALLOCATED = 0x08;
-    }
-}
+use crate::debugger::macho_parser;
 
 /// Symbol type classification
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -497,28 +484,28 @@ impl SymbolTable {
     pub fn load_macho_file(&mut self, data: &[u8]) -> Result<()> {
         info!("Loading Mach-O symbols with custom parser");
         
-        let parser = crate::debugger::macho_parser::parse_macho(data)?;
+        let parser = macho_parser::parse_macho(data)?;
         
         // Load sections
         for section in parser.get_sections() {
             let section_flags = match section.is_code() {
-                true => SectionFlags::EXECUTABLE,
-                false => SectionFlags::READABLE | SectionFlags::WRITABLE,
+                true => 0x1, // EXECUTABLE flag
+                false => 0x2 | 0x4, // READABLE | WRITABLE flags
             };
             
             self.sections.push(Section::new(
                 section.name.clone(),
                 section.address,
                 section.size,
-                section_flags.bits()
+                section_flags
             ));
         }
         
         // Load symbols
         for symbol in parser.get_symbols() {
             let sym_type = match symbol.symbol_type {
-                crate::debugger::macho_parser::SymbolType::Function => SymbolType::Function,
-                crate::debugger::macho_parser::SymbolType::Data => SymbolType::GlobalVariable,
+                macho_parser::SymbolType::Function => SymbolType::Function,
+                macho_parser::SymbolType::Data => SymbolType::Data,
                 _ => SymbolType::Other,
             };
             

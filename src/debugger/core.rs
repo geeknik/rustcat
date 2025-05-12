@@ -674,7 +674,7 @@ impl Debugger {
     }
     
     /// Get information about the function at a given address
-    pub fn get_function_info(&self, address: u64) -> Result<Option<String>> {
+    pub fn get_function_info(&self, _address: u64) -> Result<Option<String>> {
         // Just return None for now - will be implemented when DWARF parsing is complete
         Ok(None)
     }
@@ -1226,7 +1226,7 @@ impl Debugger {
 
     /// Set a hardware breakpoint at the specified address
     pub fn set_hardware_breakpoint(&mut self, address: u64) -> Result<()> {
-        if let Some(pid) = self.pid {
+        if let Some(_pid) = self.pid {
             info!("Setting hardware breakpoint at 0x{:x}", address);
             
             // Get the current thread
@@ -1235,7 +1235,7 @@ impl Debugger {
                 return Err(anyhow!("No threads available"));
             }
             
-            let thread_id = threads[0].tid();
+            let _thread_id = threads[0].tid();
             
             // TODO: Implement hardware breakpoints
             // For now, we'll just set a software breakpoint
@@ -1343,7 +1343,7 @@ impl Debugger {
     
     /// Check if the current stop is due to a hardware breakpoint
     fn check_hardware_breakpoints(&mut self) -> Result<Option<u64>> {
-        if let Some(pid) = self.pid {
+        if let Some(_pid) = self.pid {
             let threads = self.thread_manager.get_threads();
             if threads.is_empty() {
                 return Ok(None);
@@ -1351,7 +1351,7 @@ impl Debugger {
             
             // Check all threads for hardware breakpoint hits
             for thread in threads {
-                if let Ok(Some((register_index, address))) = self.platform.is_hardware_watchpoint_hit(pid, thread.thread_id()) {
+                if let Ok(Some((register_index, address))) = self.platform.is_hardware_watchpoint_hit(_pid, thread.thread_id()) {
                     info!("Hardware breakpoint hit at 0x{:x} (register #{})", address, register_index);
                     
                     // Find the corresponding breakpoint in our tracking
@@ -1438,7 +1438,7 @@ impl Debugger {
     
     /// Remove a hardware breakpoint at the specified address
     pub fn remove_hardware_breakpoint(&mut self, address: u64) -> Result<()> {
-        if let Some(pid) = self.pid {
+        if let Some(_pid) = self.pid {
             // Find the hardware breakpoint by address
             let mut index_to_remove = None;
             let mut register_index = None;
@@ -1458,7 +1458,7 @@ impl Debugger {
                 }
             }
             
-            if let (Some(idx), Some(reg_idx)) = (index_to_remove, register_index) {
+            if let (Some(idx), Some(_reg_idx)) = (index_to_remove, register_index) {
                 // Get thread ID for the operation
                 let threads = self.thread_manager.get_threads();
                 if threads.is_empty() {
@@ -1490,7 +1490,7 @@ impl Debugger {
 
     /// Check if the current stop is due to a breakpoint
     fn check_breakpoints(&mut self) -> Result<Option<u64>> {
-        if let Some(pid) = self.pid {
+        if let Some(_pid) = self.pid {
             let threads = self.thread_manager.get_threads();
             if threads.is_empty() {
                 return Ok(None);
@@ -1498,7 +1498,7 @@ impl Debugger {
             
             // Check all threads for breakpoint hits
             for thread in threads {
-                let pc = self.platform.get_program_counter(pid, thread.thread_id())?;
+                let pc = self.platform.get_program_counter(_pid, thread.thread_id())?;
                 
                 if let Some(index) = self.breakpoints.find_index(pc) {
                     // First handle disabled status
@@ -1672,33 +1672,12 @@ impl Debugger {
     /// Load symbols from a goblin-parsed Mach-O binary
     #[cfg(feature = "macho")]
     pub fn load_macho_symbols(&mut self, macho_data: &[u8]) -> Result<()> {
-        // Instead of using goblin directly, use our custom implementation
-        let symbols = self.custom_parse_macho_symbols(macho_data)?;
-        for symbol in symbols {
-            self.add_symbol(symbol);
-        }
-        
-        // Log how many symbols were loaded
-        info!("Loaded {} symbols from Mach-O binary", symbols.len());
-        
+        // This implementation is currently disabled due to Symbol type errors
+        // Will be implemented fully when DWARF integration is complete
+        info!("Macho symbol loading disabled during DWARF task restructuring");
         Ok(())
     }
     
-    /// Custom implementation of Mach-O parsing that doesn't depend on goblin
-    #[cfg(feature = "macho")]
-    fn custom_parse_macho_symbols(&self, macho_data: &[u8]) -> Result<Vec<Symbol>> {
-        let mut symbols = Vec::new();
-        
-        // In a real implementation, we would parse the Mach-O header and load commands
-        // to extract symbols. For now, we'll just create a placeholder implementation.
-        info!("Using custom Mach-O parser instead of goblin");
-        
-        // Just return an empty list for now
-        // In a real implementation, we'd parse the binary format directly
-        
-        Ok(symbols)
-    }
-
     /// Get access to the DWARF controller
     pub fn get_dwarf_controller(&self) -> &DwarfController {
         &self.dwarf_controller
