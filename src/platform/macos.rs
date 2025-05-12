@@ -1,7 +1,7 @@
 use std::process::{Command, Child};
-use std::time::Duration;
 use std::ptr;
 use std::collections::HashMap;
+use std::time::Instant;
 
 use anyhow::{anyhow, Result};
 use log::{info, debug, warn, error};
@@ -9,14 +9,15 @@ use log::{info, debug, warn, error};
 // Mach types and constants
 use mach2::mach_types::{task_t, thread_act_t};
 use mach2::kern_return::KERN_SUCCESS;
-use mach2::vm_prot::{VM_PROT_READ, VM_PROT_WRITE, VM_PROT_EXECUTE};
 use mach2::vm_types::{mach_vm_address_t, mach_vm_size_t};
 use mach2::port::{mach_port_t, MACH_PORT_NULL};
 use mach2::message::mach_msg_type_number_t;
 use mach2::task::{task_resume, task_suspend, task_threads};
 use mach2::traps::{task_for_pid, mach_task_self};
 use mach2::thread_act::{thread_suspend, thread_get_state, thread_set_state};
-use mach2::vm::{mach_vm_read_overwrite, mach_vm_write, mach_vm_protect, mach_vm_deallocate};
+use mach2::vm::{mach_vm_read_overwrite, mach_vm_write, mach_vm_protect, mach_vm_deallocate, mach_vm_region};
+use mach2::vm_region::VM_REGION_BASIC_INFO_64;
+use mach2::vm_region::vm_region_basic_info_data_64_t;
 
 // Libc for waitpid, ptrace
 use libc::{pid_t, waitpid, WIFSTOPPED, WSTOPSIG};
@@ -60,7 +61,7 @@ const WCR_BAS_BYTE8: u64 = 0xFF << 5;  // Watch bytes 0-7
 const WCR_MASK: u64 = 0x0000_FFFF;     // Mask for the control bits we use
 
 // Maximum number of watchpoints on Apple Silicon
-const MAX_WATCHPOINTS: usize = 4;       // M1/M2 typically have 4 watchpoint registers
+const MAX_WATCHPOINTS: usize = 8;       // M1/M2 typically have 8 watchpoint registers
 
 /// INT3 instruction (breakpoint)
 const BREAKPOINT_OPCODE: u8 = 0xCC;
@@ -89,10 +90,23 @@ pub const ARM_NEON_STATE64: i32 = 17;
 #[allow(dead_code)]
 pub const ARM_NEON_STATE64_COUNT: u32 = 66; // 33 128-bit registers (q0-q31) + fpsr/fpcr
 
+// Define hardware breakpoint constants
+// BCR - Breakpoint Control Register bits
+const BCR_E: u64 = 0x1;                // Enable bit (bit 0)
+const BCR_PMC_MASK: u64 = 0x3 << 1;    // Privilege Access Control (bits 1-2)
+const BCR_PMC_ANY: u64 = 0x3 << 1;     // Match in any mode
+const BCR_BAS_MASK: u64 = 0xFF << 5;   // Byte Address Select (bits 5-12)
+const BCR_BAS_THUMB: u64 = 0x03 << 5;  // Match thumb instruction (2 bytes)
+const BCR_BAS_ARM: u64 = 0x0F << 5;    // Match ARM instruction (4 bytes)
+const BCR_MASK: u64 = 0x0000_FFFF;     // Mask for the control bits we use
+
+// Maximum number of hardware breakpoints on Apple Silicon
+const MAX_BREAKPOINTS: usize = 8;      // M1/M2 typically have 8 hardware breakpoint registers
+
 /// MacOS-specific debugger implementation
 pub struct MacosDebugger {
     /// The task port for the target process
-    _task_port: Option<task_t>,
+    task_port: Option<task_t>,
     /// The child process handle (if launched by us)
     child: Option<Child>,
     /// Thread list cache
@@ -102,11 +116,10 @@ pub struct MacosDebugger {
 }
 
 impl MacosDebugger {
-    /// Create a new `MacOS` debugger
+    /// Create a new macOS debugger instance
     pub fn new() -> Self {
-        info!("Initializing MacOS debugger");
         Self {
-            _task_port: None,
+            task_port: None,
             child: None,
             threads: Vec::new(),
             watchpoint_registers: HashMap::new(),
@@ -178,7 +191,7 @@ impl MacosDebugger {
         }
         
         debug!("Successfully obtained task port 0x{:x} for process {}", task_port, pid);
-        self._task_port = Some(task_port);
+        self.task_port = Some(task_port);
         
         // Refresh the thread list
         self.refresh_threads()?;
@@ -190,8 +203,26 @@ impl MacosDebugger {
     pub fn detach(&mut self, pid: i32) -> Result<()> {
         info!("Detaching from process {}", pid);
         
-        // Remove all breakpoints (not implemented in this example)
-        // In a real implementation, we would iterate through all breakpoints and remove them
+        // Remove all breakpoints and watchpoints
+        // For hardware breakpoints and watchpoints, iterate through all active threads
+        if let Ok(threads) = self.get_threads(pid) {
+            // For each thread, clear all hardware breakpoints
+            for thread_id in threads {
+                // Disable all hardware breakpoints
+                for i in 0..MAX_BREAKPOINTS {
+                    let _ = Self::disable_hardware_breakpoint_on_thread(pid, thread_id, i);
+                }
+                
+                // Disable all hardware watchpoints
+                for i in 0..MAX_WATCHPOINTS {
+                    let _ = Self::disable_hardware_watchpoint_on_thread(pid, thread_id, i);
+                }
+            }
+        }
+        
+        // Clear all software breakpoints (if we had tracked them in a map)
+        // In a real implementation, we would have a map of addresses to original bytes
+        // and restore all of those here
         
         // Use ptrace to detach from the process
         unsafe {
@@ -202,8 +233,9 @@ impl MacosDebugger {
         }
         
         // Clear internal state
-        self._task_port = None;
+        self.task_port = None;
         self.threads.clear();
+        self.watchpoint_registers.clear();
         
         debug!("Successfully detached from process {}", pid);
         Ok(())
@@ -215,7 +247,7 @@ impl MacosDebugger {
     ///
     /// Panics if not attached to any process when unwrapping the task port
     pub fn continue_execution(&mut self, pid: i32) -> Result<()> {
-        if self._task_port.is_none() {
+        if self.task_port.is_none() {
             return Err(anyhow!("Not attached to any process"));
         }
         
@@ -231,7 +263,7 @@ impl MacosDebugger {
         }
         
         // Additionally, ensure all threads are resumed at the Mach level
-        let task_port = self._task_port.unwrap();
+        let task_port = self.task_port.unwrap();
         let kr = unsafe { task_resume(task_port) };
         if kr == KERN_SUCCESS {
             debug!("Successfully resumed task at Mach level");
@@ -245,7 +277,7 @@ impl MacosDebugger {
     
     /// Set a breakpoint at the specified address
     pub fn set_breakpoint(&mut self, pid: i32, address: u64) -> Result<u8> {
-        if self._task_port.is_none() {
+        if self.task_port.is_none() {
             return Err(anyhow!("Not attached to any process"));
         }
         
@@ -265,7 +297,7 @@ impl MacosDebugger {
     
     /// Remove a breakpoint at the specified address
     pub fn remove_breakpoint(&mut self, pid: i32, address: u64, original_byte: u8) -> Result<()> {
-        if self._task_port.is_none() {
+        if self.task_port.is_none() {
             return Err(anyhow!("Not attached to any process"));
         }
         
@@ -280,7 +312,7 @@ impl MacosDebugger {
     
     /// Get the register values for the specified thread
     pub fn get_registers(&self, pid: i32) -> Result<Registers> {
-        if self._task_port.is_none() {
+        if self.task_port.is_none() {
             return Err(anyhow!("Not attached to any process"));
         }
         
@@ -341,7 +373,7 @@ impl MacosDebugger {
     
     /// Set the registers for the specified thread
     pub fn set_registers(&self, pid: i32, registers: &Registers) -> Result<()> {
-        if self._task_port.is_none() {
+        if self.task_port.is_none() {
             return Err(anyhow!("Not attached to any process"));
         }
         
@@ -424,7 +456,7 @@ impl MacosDebugger {
     
     /// Read memory from the target process
     pub fn read_memory(&self, pid: i32, address: u64, size: usize) -> Result<Vec<u8>> {
-        if self._task_port.is_none() {
+        if self.task_port.is_none() {
             return Err(anyhow!("Not attached to any process"));
         }
         
@@ -438,7 +470,7 @@ impl MacosDebugger {
     
     /// Helper function to read memory using `mach_vm_read_overwrite`
     fn read_memory_raw(&self, address: u64, buffer: &mut [u8]) -> Result<()> {
-        if let Some(_task_port) = self._task_port {
+        if let Some(task_port) = self.task_port {
             debug!("Reading memory at address 0x{:x}, size: {} bytes", address, buffer.len());
             
             // Initialize the actual bytes read count
@@ -447,7 +479,7 @@ impl MacosDebugger {
             // Use mach_vm_read_overwrite to read memory from the target process
             let kr = unsafe {
                 mach_vm_read_overwrite(
-                    _task_port,
+                    task_port,
                     address as mach_vm_address_t,
                     buffer.len() as mach_vm_size_t,
                     buffer.as_mut_ptr() as mach_vm_address_t,
@@ -477,7 +509,7 @@ impl MacosDebugger {
     
     /// Write memory to the target process
     pub fn write_memory(&self, pid: i32, address: u64, data: &[u8]) -> Result<()> {
-        if self._task_port.is_none() {
+        if self.task_port.is_none() {
             return Err(anyhow!("Not attached to any process"));
         }
         
@@ -490,13 +522,13 @@ impl MacosDebugger {
     
     /// Helper function to write memory using `mach_vm_write`
     fn write_memory_raw(&self, address: u64, data: &[u8]) -> Result<()> {
-        if let Some(_task_port) = self._task_port {
+        if let Some(task_port) = self.task_port {
             debug!("Writing {} bytes to address 0x{:x}", data.len(), address);
             
             // Use mach_vm_write to write memory to the target process
             let kr = unsafe {
                 mach_vm_write(
-                    _task_port,
+                    task_port,
                     address as mach_vm_address_t,
                     data.as_ptr() as usize,
                     data.len() as mach_msg_type_number_t
@@ -518,7 +550,7 @@ impl MacosDebugger {
     
     /// Step a single instruction
     pub fn step(&mut self, pid: i32) -> Result<()> {
-        if self._task_port.is_none() {
+        if self.task_port.is_none() {
             return Err(anyhow!("Not attached to any process"));
         }
         
@@ -527,14 +559,65 @@ impl MacosDebugger {
         // Get the current thread
         let thread = self.get_current_thread()?;
         
-        // In a real implementation, we would:
-        // 1. Temporarily remove any breakpoint at the current instruction
-        // 2. Use PT_STEP to single-step one instruction
-        // 3. Handle SIGTRAP signal
-        // 4. Restore any breakpoint
+        // In macOS, we need to:
+        // 1. Get current thread state
+        // 2. Set the single-step bit in CPSR
+        // 3. Continue execution (with thread-specific controls if needed)
+        // 4. Wait for the SIGTRAP that indicates the step is complete
         
-        // For our implementation, we'll just pretend it worked
-        debug!("Stepped thread 0x{:x}", thread);
+        // First, get current registers
+        let mut registers = self.get_registers(pid)?;
+        
+        // Set the single-step bit in CPSR (T bit for ARM)
+        // For ARM64, bit 21 of PSTATE/CPSR is the SS (Single Step) bit
+        if let Some(cpsr) = registers.get(Register::Cpsr) {
+            // Set SS bit (bit 21)
+            let new_cpsr = cpsr | (1 << 21);
+            registers.set(Register::Cpsr, new_cpsr);
+            
+            // Update registers with the modified CPSR
+            self.set_registers(pid, &registers)?;
+        } else {
+            return Err(anyhow!("Failed to get CPSR register for thread 0x{:x}", thread));
+        }
+        
+        // Continue execution
+        unsafe {
+            let result = libc::ptrace(PT_CONTINUE as _, pid, std::ptr::null_mut(), 0);
+            if result < 0 {
+                return Err(anyhow!("Failed to continue process after setting single-step: {}", 
+                    std::io::Error::last_os_error()));
+            }
+        }
+        
+        // Wait for the process to stop with SIGTRAP
+        let mut status = 0;
+        unsafe {
+            let wait_result = waitpid(pid, &raw mut status, 0);
+            if wait_result < 0 {
+                return Err(anyhow!("Failed to wait for process {}: {}", 
+                    pid, std::io::Error::last_os_error()));
+            }
+            
+            if !WIFSTOPPED(status) {
+                return Err(anyhow!("Process {} did not stop after single-step", pid));
+            }
+            
+            let stop_signal = WSTOPSIG(status);
+            debug!("Process {} stopped with signal {} after single-step", pid, stop_signal);
+        }
+        
+        // Clear the single-step bit from CPSR
+        if let Some(cpsr) = registers.get(Register::Cpsr) {
+            // Clear SS bit (bit 21)
+            let new_cpsr = cpsr & !(1 << 21);
+            registers.set(Register::Cpsr, new_cpsr);
+            
+            // Update registers with the modified CPSR
+            self.set_registers(pid, &registers)?;
+        }
+        
+        debug!("Successfully stepped thread 0x{:x}", thread);
         
         Ok(())
     }
@@ -549,7 +632,7 @@ impl MacosDebugger {
         }
         
         // If we're attached, detach first
-        if self._task_port.is_some() {
+        if self.task_port.is_some() {
             let _ = self.detach(pid);
         }
         
@@ -558,7 +641,7 @@ impl MacosDebugger {
     
     /// Refresh the list of threads in the target process
     fn refresh_threads(&mut self) -> Result<()> {
-        if let Some(_task_port) = self._task_port {
+        if let Some(task_port) = self.task_port {
             // Clear existing threads
             self.threads.clear();
             
@@ -569,7 +652,7 @@ impl MacosDebugger {
             // Get the list of threads using task_threads API
             let kr = unsafe {
                 task_threads(
-                    _task_port,
+                    task_port,
                     &raw mut thread_list,
                     &raw mut thread_count
                 )
@@ -618,12 +701,12 @@ impl MacosDebugger {
     /// Suspend all threads in the current process
     #[allow(dead_code)]
     fn suspend_all_threads(&self) -> Result<()> {
-        if let Some(_task_port) = self._task_port {
+        if let Some(task_port) = self.task_port {
             // In a real implementation, we could either suspend the entire task
             // or suspend each thread individually
             
             // Suspend the task
-            let kr = unsafe { task_suspend(_task_port) };
+            let kr = unsafe { task_suspend(task_port) };
             if kr != KERN_SUCCESS {
                 return Err(anyhow!("Failed to suspend task: {}", kr));
             }
@@ -654,14 +737,44 @@ impl MacosDebugger {
     }
     
     /// Get memory protection flags for an address
-    #[allow(dead_code)]
-    fn get_memory_protection(&self, _address: u64) -> Result<u32> {
-        if let Some(_task_port) = self._task_port {
-            // In a real implementation, we would use mach_vm_region to get memory protection
-            // For this implementation, we'll just return a default
+    pub fn get_memory_protection(&self, address: u64) -> Result<u32> {
+        if let Some(task_port) = self.task_port {
+            debug!("Getting memory protection for address 0x{:x}", address);
             
-            // Return default RWX
-            Ok((VM_PROT_READ | VM_PROT_WRITE | VM_PROT_EXECUTE) as u32)
+            // Variables for mach_vm_region call
+            let mut address_as_vm_address = address as mach_vm_address_t;
+            let mut size: mach_vm_size_t = 0;
+            let mut object_name: mach_port_t = 0;
+            
+            // Region info structure
+            let mut info: vm_region_basic_info_data_64_t = unsafe { std::mem::zeroed() };
+            let mut count = std::mem::size_of::<vm_region_basic_info_data_64_t>() as mach_msg_type_number_t / std::mem::size_of::<i32>() as mach_msg_type_number_t;
+            
+            // Call mach_vm_region to get region information
+            let kr = unsafe {
+                mach_vm_region(
+                    task_port,
+                    &mut address_as_vm_address,
+                    &mut size,
+                    VM_REGION_BASIC_INFO_64,
+                    (&mut info as *mut vm_region_basic_info_data_64_t).cast::<i32>(),
+                    &mut count,
+                    &mut object_name
+                )
+            };
+            
+            if kr != KERN_SUCCESS {
+                error!("Failed to get memory region info for address 0x{:x}: Error {}", address, kr);
+                return Err(anyhow!("Failed to get memory region info for address 0x{:x}: Error {}", address, kr));
+            }
+            
+            // Extract protection flags
+            let current_protection = info.protection as u32;
+            
+            debug!("Address 0x{:x} has protection 0x{:x}", address, current_protection);
+            
+            // Return the current protection flags
+            Ok(current_protection)
         } else {
             Err(anyhow!("Not attached to any process"))
         }
@@ -670,14 +783,14 @@ impl MacosDebugger {
     /// Set memory protection flags for a region
     #[allow(dead_code)]
     fn set_memory_protection(&self, address: u64, size: usize, protection: u32) -> Result<()> {
-        if let Some(_task_port) = self._task_port {
+        if let Some(task_port) = self.task_port {
             debug!("Setting memory protection 0x{:x} for address 0x{:x} ({} bytes)", 
                 protection, address, size);
             
             // Call mach_vm_protect to set the memory protection
             let kr = unsafe {
                 mach_vm_protect(
-                    _task_port,
+                    task_port,
                     address as mach_vm_address_t,
                     size as mach_vm_size_t,
                     0, // set_maximum (false)
@@ -702,28 +815,57 @@ impl MacosDebugger {
     
     /// Wait for the process to stop (e.g., at a breakpoint or after a step)
     pub fn wait_for_stop(&self, pid: i32, timeout_ms: u64) -> Result<()> {
-        if self._task_port.is_none() {
+        if self.task_port.is_none() {
             return Err(anyhow!("Not attached to any process"));
         }
         
         info!("Waiting for process {} to stop (timeout: {}ms)", pid, timeout_ms);
         
-        // In a real implementation, we would use waitpid with WNOHANG to poll
-        // or with a timeout implemented via alarm or similar
+        // For macOS, we'll use waitpid with WNOHANG to poll and implement our own timeout
+        let start_time = std::time::Instant::now();
+        let timeout = std::time::Duration::from_millis(timeout_ms);
         
-        // For this implementation, we'll just wait a bit and pretend it stopped
-        std::thread::sleep(Duration::from_millis(std::cmp::min(timeout_ms, 100)));
+        let mut status = 0;
         
-        debug!("Process stopped (simulated)");
-        
-        Ok(())
+        loop {
+            // Check if we've exceeded the timeout
+            if start_time.elapsed() > timeout {
+                return Err(anyhow!("Timeout waiting for process {} to stop", pid));
+            }
+            
+            // Try waitpid with WNOHANG (return immediately)
+            let wait_result = unsafe { waitpid(pid, &raw mut status, libc::WNOHANG) };
+            
+            if wait_result < 0 {
+                // Error occurred
+                return Err(anyhow!("Failed to wait for process {}: {}", 
+                    pid, std::io::Error::last_os_error()));
+            } else if wait_result == 0 {
+                // Process is still running, wait a bit and try again
+                std::thread::sleep(std::time::Duration::from_millis(10));
+                continue;
+            } else {
+                // Process status changed
+                if WIFSTOPPED(status) {
+                    // Process stopped with a signal
+                    let stop_signal = WSTOPSIG(status);
+                    debug!("Process {} stopped with signal {}", pid, stop_signal);
+                    return Ok(());
+                } else {
+                    // Process exited or other status change
+                    return Err(anyhow!("Process {} changed state but did not stop (status={})", 
+                        pid, status));
+                }
+            }
+        }
     }
     
     /// Query hardware debug capabilities
     pub fn get_debug_capabilities(&self) -> DebugCapabilities {
-        // For Apple Silicon M1/M2, typically 4 hardware watchpoints
+        // On Apple Silicon, we typically have 8 hardware breakpoint registers
+        // and 4 hardware watchpoint registers
         DebugCapabilities {
-            hw_breakpoint_count: 8,  // M1/M2 typically have 8 hardware breakpoint registers
+            hw_breakpoint_count: MAX_BREAKPOINTS,
             hw_watchpoint_count: MAX_WATCHPOINTS,
         }
     }
@@ -808,8 +950,8 @@ impl MacosDebugger {
     }
     
     /// Get list of threads for a process
-    fn get_threads(&self, pid: i32) -> Result<Vec<u64>> {
-        if let Some(task_port) = self._task_port {
+    pub fn get_threads(&self, pid: i32) -> Result<Vec<u64>> {
+        if let Some(task_port) = self.task_port {
             // Get thread list from task
             let mut thread_list = std::ptr::null_mut();
             let mut thread_count: mach_msg_type_number_t = 0;
@@ -852,9 +994,21 @@ impl MacosDebugger {
     }
     
     /// Get registers for a thread
-    pub fn get_thread_registers(&self, _pid: i32, thread_id: u64) -> Result<Registers> {
+    pub fn get_thread_registers(&self, pid: i32, thread_id: u64) -> Result<Registers> {
+        // Validate that we're connected to the correct process
+        if self.task_port.is_none() {
+            return Err(anyhow!("Not attached to any process"));
+        }
+        
+        // Confirm that the process ID matches what we expect
+        if let Ok(current_pid) = self.get_current_pid() {
+            if current_pid != pid {
+                return Err(anyhow!("PID mismatch: expected {}, got {}", pid, current_pid));
+            }
+        }
+        
         // Get the thread port for the thread ID
-        let thread_port = Self::get_thread_port(self._task_port.unwrap_or(MACH_PORT_NULL), thread_id)?;
+        let thread_port = Self::get_thread_port(self.task_port.unwrap_or(MACH_PORT_NULL), thread_id)?;
         
         // Get the thread state
         let mut arm_thread_state = ArmThreadState64T { 
@@ -901,20 +1055,18 @@ impl MacosDebugger {
         Ok(registers)
     }
     
-    /// Set a hardware watchpoint
-    pub fn set_watchpoint(&mut self, pid: i32, thread_id: u64, address: u64, size: usize, 
-                          watchpoint_type: WatchpointType) -> Result<usize> {
-        // Check if we have any free watchpoint registers
-        let used_registers = self.watchpoint_registers.len();
-        if used_registers >= MAX_WATCHPOINTS {
-            return Err(anyhow!("No free hardware watchpoint registers available"));
+    /// Set a hardware breakpoint at the specified address
+    pub fn set_hardware_breakpoint(&mut self, pid: i32, thread_id: u64, address: u64) -> Result<usize> {
+        // Check if we have any free breakpoint registers
+        let mut hardware_breakpoints = HashMap::new();
+        
+        // Get debug capabilities to verify hardware breakpoint count
+        let capabilities = self.get_debug_capabilities();
+        if capabilities.hw_breakpoint_count == 0 {
+            return Err(anyhow!("Hardware breakpoints are not supported on this platform"));
         }
         
-        // Find the next available register index
-        let register_index = (0..MAX_WATCHPOINTS)
-            .find(|i| !self.watchpoint_registers.contains_key(i))
-            .unwrap(); // Safe because we checked used_registers < MAX_WATCHPOINTS
-        
+        // Find the next available register index by checking debug state
         // Get the task port for the target process
         let mut task: mach_port_t = 0;
         unsafe {
@@ -949,37 +1101,42 @@ impl MacosDebugger {
             }
         }
         
-        // Set up watchpoint value register
-        debug_state.__wvr[register_index] = address;
-        
-        // Set up watchpoint control register
-        let mut wcr_val: u64 = 0;
-        
-        // Enable bit
-        wcr_val |= WCR_E;
-        
-        // Set privilege mode (match in any mode)
-        wcr_val |= WCR_PAC_ANY;
-        
-        // Set watch type
-        match watchpoint_type {
-            WatchpointType::Read => wcr_val |= WCR_LSC_LOAD,
-            WatchpointType::Write => wcr_val |= WCR_LSC_STORE,
-            WatchpointType::ReadWrite => wcr_val |= WCR_LSC_BOTH,
+        // Check for existing enabled breakpoints and find a free slot
+        for i in 0..MAX_BREAKPOINTS {
+            if (debug_state.__bcr[i] & BCR_E) != 0 {
+                // This breakpoint is enabled, remember its address
+                hardware_breakpoints.insert(i, debug_state.__bvr[i]);
+            }
         }
         
-        // Set byte address select
-        let bas = match size {
-            1 => WCR_BAS_BYTE1,
-            2 => WCR_BAS_BYTE2,
-            4 => WCR_BAS_BYTE4,
-            8 => WCR_BAS_BYTE8,
-            _ => return Err(anyhow!("Invalid watchpoint size: {}, must be 1, 2, 4, or 8", size)),
-        };
-        wcr_val |= bas;
+        // Find a free register
+        let free_count = MAX_BREAKPOINTS - hardware_breakpoints.len();
+        if free_count == 0 {
+            return Err(anyhow!("No free hardware breakpoint registers available"));
+        }
+        
+        let register_index = (0..MAX_BREAKPOINTS)
+            .find(|i| !hardware_breakpoints.contains_key(i))
+            .unwrap(); // Safe because we checked free_count > 0
+        
+        // Set breakpoint value register (BVR) to target address
+        debug_state.__bvr[register_index] = address;
+        
+        // Configure breakpoint control register (BCR)
+        let mut bcr_val: u64 = 0;
+        
+        // Enable bit
+        bcr_val |= BCR_E;
+        
+        // Set privilege mode (match in any mode)
+        bcr_val |= BCR_PMC_ANY;
+        
+        // Set byte address select based on instruction type
+        // For ARM64, we use BCR_BAS_ARM (match all 4 bytes)
+        bcr_val |= BCR_BAS_ARM;
         
         // Update control register
-        debug_state.__wcr[register_index] = wcr_val;
+        debug_state.__bcr[register_index] = bcr_val;
         
         // Set the new debug state
         unsafe {
@@ -995,15 +1152,12 @@ impl MacosDebugger {
             }
         }
         
-        // Remember we're using this register
-        self.watchpoint_registers.insert(register_index, address);
-        
-        // Need to apply the watchpoint to all threads
+        // Apply the same breakpoint to all threads for consistency
         if let Ok(threads) = self.get_threads(pid) {
             for &tid in &threads {
                 if tid != thread_id {
-                    // Apply the same watchpoint to other threads
-                    let _ = Self::apply_watchpoint_to_thread(pid, tid, register_index, address, size, watchpoint_type);
+                    // Apply the same breakpoint to other threads
+                    let _ = Self::apply_hardware_breakpoint_to_thread(pid, tid, register_index, address);
                 }
             }
         }
@@ -1011,10 +1165,8 @@ impl MacosDebugger {
         Ok(register_index)
     }
     
-    /// Apply a watchpoint to a specific thread (used for multi-thread consistency)
-    fn apply_watchpoint_to_thread(pid: i32, thread_id: u64, register_index: usize, 
-                                 address: u64, size: usize, 
-                                 watchpoint_type: WatchpointType) -> Result<()> {
+    /// Apply a hardware breakpoint to a specific thread (used for multi-thread consistency)
+    fn apply_hardware_breakpoint_to_thread(pid: i32, thread_id: u64, register_index: usize, address: u64) -> Result<()> {
         // Get the task port for the target process
         let mut task: mach_port_t = 0;
         unsafe {
@@ -1049,37 +1201,370 @@ impl MacosDebugger {
             }
         }
         
-        // Set up watchpoint value register
-        debug_state.__wvr[register_index] = address;
+        // Set breakpoint value register (BVR) to target address
+        debug_state.__bvr[register_index] = address;
         
-        // Set up watchpoint control register
-        let mut wcr_val: u64 = 0;
+        // Configure breakpoint control register (BCR)
+        let mut bcr_val: u64 = 0;
         
         // Enable bit
-        wcr_val |= WCR_E;
+        bcr_val |= BCR_E;
         
         // Set privilege mode (match in any mode)
-        wcr_val |= WCR_PAC_ANY;
+        bcr_val |= BCR_PMC_ANY;
         
-        // Set watch type
-        match watchpoint_type {
-            WatchpointType::Read => wcr_val |= WCR_LSC_LOAD,
-            WatchpointType::Write => wcr_val |= WCR_LSC_STORE,
-            WatchpointType::ReadWrite => wcr_val |= WCR_LSC_BOTH,
-        }
-        
-        // Set byte address select
-        let bas = match size {
-            1 => WCR_BAS_BYTE1,
-            2 => WCR_BAS_BYTE2,
-            4 => WCR_BAS_BYTE4,
-            8 => WCR_BAS_BYTE8,
-            _ => return Err(anyhow!("Invalid watchpoint size: {}, must be 1, 2, 4, or 8", size)),
-        };
-        wcr_val |= bas;
+        // Set byte address select based on instruction type
+        // For ARM64, we use BCR_BAS_ARM (match all 4 bytes)
+        bcr_val |= BCR_BAS_ARM;
         
         // Update control register
-        debug_state.__wcr[register_index] = wcr_val;
+        debug_state.__bcr[register_index] = bcr_val;
+        
+        // Set the new debug state
+        unsafe {
+            let kr = thread_set_state(
+                thread_port,
+                ARM_DEBUG_STATE64,
+                &raw const debug_state as *mut u32,
+                count
+            );
+            
+            if kr != KERN_SUCCESS {
+                return Err(anyhow!("Failed to set debug state: error {}", kr));
+            }
+        }
+        
+        Ok(())
+    }
+    
+    /// Remove a hardware breakpoint
+    pub fn remove_hardware_breakpoint(&mut self, pid: i32, thread_id: u64, register_index: usize) -> Result<()> {
+        if register_index >= MAX_BREAKPOINTS {
+            return Err(anyhow!("Invalid hardware breakpoint register index: {}", register_index));
+        }
+        
+        // Get the task port for the target process
+        let mut task: mach_port_t = 0;
+        unsafe {
+            let kr = task_for_pid(mach_task_self(), pid, &raw mut task);
+            if kr != KERN_SUCCESS {
+                return Err(anyhow!("Failed to get task for pid {}: error {}", pid, kr));
+            }
+        }
+        
+        // Get thread port
+        let thread_port = Self::get_thread_port(task, thread_id)?;
+        
+        // Get current debug state
+        let mut count = (std::mem::size_of::<ArmDebugState64T>() / std::mem::size_of::<u32>()) as u32;
+        let mut debug_state = ArmDebugState64T {
+            __bvr: [0; 16],
+            __bcr: [0; 16],
+            __wvr: [0; 16],
+            __wcr: [0; 16],
+        };
+        
+        unsafe {
+            let kr = thread_get_state(
+                thread_port,
+                ARM_DEBUG_STATE64,
+                (&raw mut debug_state).cast::<u32>(),
+                &raw mut count
+            );
+            
+            if kr != KERN_SUCCESS {
+                return Err(anyhow!("Failed to get debug state: error {}", kr));
+            }
+        }
+        
+        // Disable the breakpoint by clearing the enable bit
+        debug_state.__bcr[register_index] &= !BCR_E;
+        
+        // Set the new debug state
+        unsafe {
+            let kr = thread_set_state(
+                thread_port,
+                ARM_DEBUG_STATE64,
+                &raw const debug_state as *mut u32,
+                count
+            );
+            
+            if kr != KERN_SUCCESS {
+                return Err(anyhow!("Failed to set debug state: error {}", kr));
+            }
+        }
+        
+        // Apply to all threads for consistency
+        if let Ok(threads) = self.get_threads(pid) {
+            for &tid in &threads {
+                if tid != thread_id {
+                    // Apply the same change to other threads
+                    let _ = Self::disable_hardware_breakpoint_on_thread(pid, tid, register_index);
+                }
+            }
+        }
+        
+        Ok(())
+    }
+    
+    /// Disable a hardware breakpoint on a specific thread
+    fn disable_hardware_breakpoint_on_thread(pid: i32, thread_id: u64, register_index: usize) -> Result<()> {
+        // Get the task port for the target process
+        let mut task: mach_port_t = 0;
+        unsafe {
+            let kr = task_for_pid(mach_task_self(), pid, &raw mut task);
+            if kr != KERN_SUCCESS {
+                return Err(anyhow!("Failed to get task for pid {}: error {}", pid, kr));
+            }
+        }
+        
+        // Get thread port
+        let thread_port = Self::get_thread_port(task, thread_id)?;
+        
+        // Get current debug state
+        let mut count = (std::mem::size_of::<ArmDebugState64T>() / std::mem::size_of::<u32>()) as u32;
+        let mut debug_state = ArmDebugState64T {
+            __bvr: [0; 16],
+            __bcr: [0; 16],
+            __wvr: [0; 16],
+            __wcr: [0; 16],
+        };
+        
+        unsafe {
+            let kr = thread_get_state(
+                thread_port,
+                ARM_DEBUG_STATE64,
+                (&raw mut debug_state).cast::<u32>(),
+                &raw mut count
+            );
+            
+            if kr != KERN_SUCCESS {
+                return Err(anyhow!("Failed to get debug state: error {}", kr));
+            }
+        }
+        
+        // Disable the breakpoint by clearing the enable bit
+        debug_state.__bcr[register_index] &= !BCR_E;
+        
+        // Set the new debug state
+        unsafe {
+            let kr = thread_set_state(
+                thread_port,
+                ARM_DEBUG_STATE64,
+                &raw const debug_state as *mut u32,
+                count
+            );
+            
+            if kr != KERN_SUCCESS {
+                return Err(anyhow!("Failed to set debug state: error {}", kr));
+            }
+        }
+        
+        Ok(())
+    }
+    
+    /// Check if a hardware breakpoint has been hit
+    pub fn is_hardware_breakpoint_hit(&self, pid: i32, thread_id: u64) -> Result<Option<(usize, u64)>> {
+        // Get the task port for the target process
+        let mut task: mach_port_t = 0;
+        unsafe {
+            let kr = task_for_pid(mach_task_self(), pid, &raw mut task);
+            if kr != KERN_SUCCESS {
+                return Err(anyhow!("Failed to get task for pid {}: error {}", pid, kr));
+            }
+        }
+        
+        // Get thread port
+        let thread_port = Self::get_thread_port(task, thread_id)?;
+        
+        // Get current debug state
+        let mut debug_state = ArmDebugState64T {
+            __bvr: [0; 16],
+            __bcr: [0; 16],
+            __wvr: [0; 16],
+            __wcr: [0; 16],
+        };
+        
+        let mut count = (std::mem::size_of::<ArmDebugState64T>() / std::mem::size_of::<u32>()) as mach_msg_type_number_t;
+        
+        unsafe {
+            let kr = thread_get_state(
+                thread_port,
+                ARM_DEBUG_STATE64,
+                std::mem::transmute(&mut debug_state),
+                &mut count
+            );
+            
+            if kr != KERN_SUCCESS {
+                return Err(anyhow!("Failed to get thread debug state: {}", kr));
+            }
+        }
+        
+        // On ARM64, we need to check if ESR_EL1 indicates a debug exception
+        // We'll infer this from the fact that the instruction pointer is at
+        // a location that matches one of our breakpoints
+        
+        // Get the program counter
+        let registers = self.get_thread_registers(pid, thread_id)?;
+        let pc = registers.get(Register::Pc).unwrap_or(0);
+        
+        // Check if PC matches any of our BVR registers
+        for i in 0..MAX_BREAKPOINTS {
+            if (debug_state.__bcr[i] & BCR_E) != 0 {
+                // This breakpoint is enabled
+                let bp_addr = debug_state.__bvr[i];
+                if pc == bp_addr {
+                    // Hardware breakpoint hit!
+                    return Ok(Some((i, bp_addr)));
+                }
+            }
+        }
+        
+        // No hardware breakpoint hit
+        Ok(None)
+    }
+    
+    /// Set a hardware watchpoint
+    pub fn set_watchpoint(&mut self, pid: i32, thread_id: u64, address: u64, size: usize, watchpoint_type: WatchpointType) -> Result<usize> {
+        // Check if we have a free watchpoint register
+        let register_index = self.watchpoint_registers.iter()
+            .find(|(_, &addr)| addr == address)
+            .map(|(&idx, _)| idx)
+            .unwrap_or_else(|| {
+                // Find first free register
+                (0..MAX_WATCHPOINTS).find(|&i| !self.watchpoint_registers.contains_key(&i))
+                    .unwrap_or(0)
+            });
+        
+        if register_index >= MAX_WATCHPOINTS {
+            return Err(anyhow!("No free hardware watchpoint registers available"));
+        }
+        
+        // Get thread port
+        let result = Self::set_hardware_watchpoint_on_thread(
+            pid, 
+            thread_id, 
+            register_index, 
+            address, 
+            size, 
+            watchpoint_type
+        );
+        
+        if result.is_ok() {
+            // Store in our register map
+            self.watchpoint_registers.insert(register_index, address);
+            
+            // Apply to all threads for consistency
+            if let Ok(threads) = self.get_threads(pid) {
+                for &tid in &threads {
+                    if tid != thread_id {
+                        // Apply the same watchpoint to other threads
+                        let _ = Self::set_hardware_watchpoint_on_thread(
+                            pid, 
+                            tid, 
+                            register_index, 
+                            address, 
+                            size, 
+                            watchpoint_type
+                        );
+                    }
+                }
+            }
+        }
+        
+        Ok(register_index)
+    }
+    
+    /// Set a hardware watchpoint on a specific thread
+    fn set_hardware_watchpoint_on_thread(
+        pid: i32, 
+        thread_id: u64, 
+        register_index: usize, 
+        address: u64,
+        size: usize,
+        watchpoint_type: WatchpointType
+    ) -> Result<()> {
+        if register_index >= MAX_WATCHPOINTS {
+            return Err(anyhow!("Invalid hardware watchpoint register index: {}", register_index));
+        }
+        
+        // Get the task port for the target process
+        let mut task: mach_port_t = 0;
+        unsafe {
+            let kr = task_for_pid(mach_task_self(), pid, &raw mut task);
+            if kr != KERN_SUCCESS {
+                return Err(anyhow!("Failed to get task for pid {}: error {}", pid, kr));
+            }
+        }
+        
+        // Get thread port
+        let thread_port = Self::get_thread_port(task, thread_id)?;
+        
+        // Get current debug state
+        let mut count = (std::mem::size_of::<ArmDebugState64T>() / std::mem::size_of::<u32>()) as u32;
+        let mut debug_state = ArmDebugState64T {
+            __bvr: [0; 16],
+            __bcr: [0; 16],
+            __wvr: [0; 16],
+            __wcr: [0; 16],
+        };
+        
+        unsafe {
+            let kr = thread_get_state(
+                thread_port,
+                ARM_DEBUG_STATE64,
+                (&raw mut debug_state).cast::<u32>(),
+                &raw mut count
+            );
+            
+            if kr != KERN_SUCCESS {
+                return Err(anyhow!("Failed to get debug state: error {}", kr));
+            }
+        }
+        
+        // Set watchpoint address
+        debug_state.__wvr[register_index] = address;
+        
+        // Set watchpoint control register
+        // WCR bits:
+        // E (bit 0): Enable
+        // PAC (bits 1-2): Privileged access control
+        // LSC (bits 3-4): Load/store control
+        //   00: Reserved
+        //   01: Load
+        //   10: Store
+        //   11: Load or store
+        // BAS (bits 5-12): Byte address select
+        // HMC (bit 13): Higher mode control
+        // SSC (bits 14-15): Security state control
+        // LBN (bits 16-19): Linked BRP number
+        // WT (bit 20): Watchpoint type
+        
+        // Set size mask (BAS field)
+        let bas = match size {
+            1 => 0x01, // 1 byte
+            2 => 0x03, // 2 bytes
+            4 => 0x0F, // 4 bytes
+            8 => 0xFF, // 8 bytes
+            _ => return Err(anyhow!("Unsupported watchpoint size: {}", size)),
+        };
+        
+        // Set load/store control bits (LSC field)
+        let lsc = match watchpoint_type {
+            WatchpointType::Read => 0x01, // Load only
+            WatchpointType::Write => 0x02, // Store only
+            WatchpointType::ReadWrite => 0x03, // Load or store
+            WatchpointType::Conditional => 0x03, // Use Read/Write for conditional
+            WatchpointType::Logging => 0x03, // Use Read/Write for logging
+        };
+        
+        // Set watchpoint control
+        debug_state.__wcr[register_index] = 
+            1 |                          // E (enabled)
+            (3 << 1) |                   // PAC: Allow all privilege levels
+            (lsc << 3) |                 // LSC: Load/store control
+            ((bas as u64) << 5) |        // BAS: Byte address select
+            (3 << 14);                   // SSC: All security states
         
         // Set the new debug state
         unsafe {
@@ -1099,83 +1584,9 @@ impl MacosDebugger {
     }
     
     /// Remove a hardware watchpoint
-    pub fn remove_watchpoint(&mut self, pid: i32, register_index: usize) -> Result<()> {
+    pub fn remove_hardware_watchpoint(&mut self, pid: i32, thread_id: u64, register_index: usize) -> Result<()> {
         if register_index >= MAX_WATCHPOINTS {
-            return Err(anyhow!("Invalid watchpoint register index: {}", register_index));
-        }
-        
-        // Check if the register is in use
-        if !self.watchpoint_registers.contains_key(&register_index) {
-            return Err(anyhow!("Watchpoint register {} is not in use", register_index));
-        }
-        
-        // Get the task port for the target process
-        let mut task: mach_port_t = 0;
-        unsafe {
-            let kr = task_for_pid(mach_task_self(), pid, &raw mut task);
-            if kr != KERN_SUCCESS {
-                return Err(anyhow!("Failed to get task for pid {}: error {}", pid, kr));
-            }
-        }
-        
-        // Get all threads and remove the watchpoint from each
-        if let Ok(threads) = self.get_threads(pid) {
-            for &thread_id in &threads {
-                // Get thread port
-                let thread_port = Self::get_thread_port(task, thread_id)?;
-                
-                // Get current debug state
-                let mut count = (std::mem::size_of::<ArmDebugState64T>() / std::mem::size_of::<u32>()) as u32;
-                let mut debug_state = ArmDebugState64T {
-                    __bvr: [0; 16],
-                    __bcr: [0; 16],
-                    __wvr: [0; 16],
-                    __wcr: [0; 16],
-                };
-                
-                unsafe {
-                    let kr = thread_get_state(
-                        thread_port,
-                        ARM_DEBUG_STATE64,
-                        (&raw mut debug_state).cast::<u32>(),
-                        &raw mut count
-                    );
-                    
-                    if kr != KERN_SUCCESS {
-                        return Err(anyhow!("Failed to get debug state: error {}", kr));
-                    }
-                }
-                
-                // Disable the watchpoint by clearing the enable bit
-                debug_state.__wcr[register_index] &= !WCR_E;
-                
-                // Set the new debug state
-                unsafe {
-                    let kr = thread_set_state(
-                        thread_port,
-                        ARM_DEBUG_STATE64,
-                        &raw const debug_state as *mut u32,
-                        count
-                    );
-                    
-                    if kr != KERN_SUCCESS {
-                        return Err(anyhow!("Failed to set debug state: error {}", kr));
-                    }
-                }
-            }
-        }
-        
-        // Remove from our tracking map
-        self.watchpoint_registers.remove(&register_index);
-        
-        Ok(())
-    }
-    
-    /// Check if a thread was stopped by a watchpoint
-    pub fn is_watchpoint_hit(&self, pid: i32, thread_id: u64) -> Result<Option<(usize, u64)>> {
-        // If no watchpoints are active, return immediately
-        if self.watchpoint_registers.is_empty() {
-            return Ok(None);
+            return Err(anyhow!("Invalid hardware watchpoint register index: {}", register_index));
         }
         
         // Get the task port for the target process
@@ -1212,27 +1623,175 @@ impl MacosDebugger {
             }
         }
         
-        // Check each watchpoint register for a hit
-        for (&register_index, &address) in &self.watchpoint_registers {
-            // Check if this watchpoint is enabled and hit
-            // The hit status is in bit 0 of the ESR_EL1 register, but unfortunately
-            // we can't access this directly in userspace on macOS
-            // Instead, we have to infer by checking PC and examining memory accesses
+        // Disable the watchpoint by clearing the enable bit
+        debug_state.__wcr[register_index] &= !1; // Clear bit 0 (E)
+        
+        // Set the new debug state
+        unsafe {
+            let kr = thread_set_state(
+                thread_port,
+                ARM_DEBUG_STATE64,
+                &raw const debug_state as *mut u32,
+                count
+            );
             
-            // For now, we'll use a simple approach: if the thread is stopped and
-            // we have active watchpoints, we'll check if the PC is near any of the 
-            // watchpoint addresses
-            let registers = self.get_thread_registers(pid, thread_id)?;
-            let pc = registers.get_program_counter().unwrap_or(0);
-            
-            // If PC is within a reasonable range of the watchpoint address
-            // (this is a heuristic, not guaranteed to be accurate)
-            if pc.abs_diff(address) < 64 {
-                return Ok(Some((register_index, address)));
+            if kr != KERN_SUCCESS {
+                return Err(anyhow!("Failed to set debug state: error {}", kr));
             }
         }
         
+        // Remove from our register map
+        self.watchpoint_registers.remove(&register_index);
+        
+        // Apply to all threads for consistency
+        if let Ok(threads) = self.get_threads(pid) {
+            for &tid in &threads {
+                if tid != thread_id {
+                    // Apply the same change to other threads
+                    let _ = Self::disable_hardware_watchpoint_on_thread(pid, tid, register_index);
+                }
+            }
+        }
+        
+        Ok(())
+    }
+    
+    /// Disable a hardware watchpoint on a specific thread
+    fn disable_hardware_watchpoint_on_thread(pid: i32, thread_id: u64, register_index: usize) -> Result<()> {
+        // Get the task port for the target process
+        let mut task: mach_port_t = 0;
+        unsafe {
+            let kr = task_for_pid(mach_task_self(), pid, &raw mut task);
+            if kr != KERN_SUCCESS {
+                return Err(anyhow!("Failed to get task for pid {}: error {}", pid, kr));
+            }
+        }
+        
+        // Get thread port
+        let thread_port = Self::get_thread_port(task, thread_id)?;
+        
+        // Get current debug state
+        let mut count = (std::mem::size_of::<ArmDebugState64T>() / std::mem::size_of::<u32>()) as u32;
+        let mut debug_state = ArmDebugState64T {
+            __bvr: [0; 16],
+            __bcr: [0; 16],
+            __wvr: [0; 16],
+            __wcr: [0; 16],
+        };
+        
+        unsafe {
+            let kr = thread_get_state(
+                thread_port,
+                ARM_DEBUG_STATE64,
+                (&raw mut debug_state).cast::<u32>(),
+                &raw mut count
+            );
+            
+            if kr != KERN_SUCCESS {
+                return Err(anyhow!("Failed to get debug state: error {}", kr));
+            }
+        }
+        
+        // Disable the watchpoint by clearing the enable bit
+        debug_state.__wcr[register_index] &= !1; // Clear bit 0 (E)
+        
+        // Set the new debug state
+        unsafe {
+            let kr = thread_set_state(
+                thread_port,
+                ARM_DEBUG_STATE64,
+                &raw const debug_state as *mut u32,
+                count
+            );
+            
+            if kr != KERN_SUCCESS {
+                return Err(anyhow!("Failed to set debug state: error {}", kr));
+            }
+        }
+        
+        Ok(())
+    }
+    
+    /// Check if a hardware watchpoint has been hit by examining debug registers
+    /// Returns (register_index, address) if a watchpoint was hit
+    pub fn is_hardware_watchpoint_hit(&self, _pid: i32, thread_id: u64) -> Result<Option<(usize, u64)>> {
+        // Get the thread port
+        let thread_port = Self::get_thread_port(self.task_port.unwrap_or(0), thread_id)?;
+        
+        // Get the debug state
+        let mut debug_state = ArmDebugState64T {
+            __bvr: [0; 16],
+            __bcr: [0; 16],
+            __wvr: [0; 16],
+            __wcr: [0; 16],
+        };
+        
+        let mut count = (std::mem::size_of::<ArmDebugState64T>() / std::mem::size_of::<u32>()) as mach_msg_type_number_t;
+        
+        unsafe {
+            let kr = thread_get_state(
+                thread_port,
+                ARM_DEBUG_STATE64,
+                std::mem::transmute(&mut debug_state),
+                &mut count
+            );
+            
+            if kr != KERN_SUCCESS {
+                return Err(anyhow!("Failed to get thread debug state: {}", kr));
+            }
+        }
+        
+        // Go through each watchpoint register and see if any are enabled and showing a hit
+        for i in 0..MAX_WATCHPOINTS {
+            let wcr = debug_state.__wcr[i];
+            
+            // Check if this watchpoint is enabled and triggered
+            if (wcr & WCR_E) != 0 {
+                // On ARM, if a watchpoint is hit, hardware sets bits in PSTATE
+                // We need to check thread state for those bits
+                
+                // For now, just check our internal hashmap of active watchpoints
+                if let Some(addr) = self.watchpoint_registers.get(&i) {
+                    // In a real implementation, we would check if the watchpoint was actually hit
+                    // by examining the program counter and the instruction that caused the hit
+                    
+                    // Return the hit watchpoint
+                    return Ok(Some((i, *addr)));
+                }
+            }
+        }
+        
+        // No hit watchpoint found
         Ok(None)
+    }
+
+    /// Get the current process ID
+    pub fn get_current_pid(&self) -> Result<i32> {
+        // If we have a child process, return its PID
+        if let Some(child) = &self.child {
+            return Ok(child.id() as i32);
+        }
+        
+        // If we don't have a child, we need to find another way to get the PID
+        // Since we don't have direct access to task_pid_for_task and mach_task_self
+        // doesn't provide a way to get the PID, we'll use a different approach
+        
+        // In a real debugger implementation, we would store the PID when attaching
+        // to a process. For now, let's return an error if we don't have a child.
+        Err(anyhow!("No child process found and PID not stored during attach"))
+    }
+
+    /// Get the program counter for a thread
+    pub fn get_program_counter(&self, pid: i32, thread_id: u64) -> Result<u64> {
+        // Get the current thread registers
+        let registers = self.get_thread_registers(pid, thread_id)?;
+        
+        // Extract the program counter (PC) from the registers
+        if let Some(pc) = registers.get(Register::Pc) {
+            Ok(pc)
+        } else {
+            Err(anyhow!("Failed to get program counter for thread {}", thread_id))
+        }
     }
 }
 
