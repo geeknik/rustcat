@@ -1,11 +1,13 @@
 use std::collections::BTreeMap;
 use std::path::Path;
 use std::collections::HashMap;
+use std::fs::File;
+use std::io::Read;
 
 use anyhow::{anyhow, Result};
-use goblin::Object;
 use log::{debug, warn, info};
 use cpp_demangle::Symbol as CppSymbol;
+use object::SectionFlags;
 // We'll use the cpp_demangle crate for Rust symbols too until we add rustc_demangle
 // use rustc_demangle::demangle as rust_demangle;
 
@@ -385,6 +387,27 @@ pub struct SymbolTable {
     symbol_counts: HashMap<SymbolType, usize>,
 }
 
+// Mach-O specific structures moved outside impl block
+pub struct MachOSymbol {
+    pub name: String,
+    pub address: u64,
+    pub size: u64,
+    pub is_external: bool,
+    pub section_index: Option<usize>,
+    pub symbol_type: u8,
+}
+
+pub struct MachOSection {
+    pub name: String,
+    pub address: u64,
+    pub size: u64,
+    pub offset: u64,
+    pub align: u32,
+    pub reloff: u32,
+    pub nreloc: u32,
+    pub flags: u32,
+}
+
 impl SymbolTable {
     /// Create a new empty symbol table
     pub fn new() -> Self {
@@ -403,79 +426,103 @@ impl SymbolTable {
         }
     }
     
-    /// Load symbols from a file
-    pub fn load_from_file<P: AsRef<Path>>(&mut self, path: P) -> Result<()> {
-        // Clear existing symbols and state
-        self.by_address.clear();
-        self.by_name.clear();
-        self.by_demangled_name.clear();
-        self.address_ranges.clear();
-        self.name_prefix_index.clear();
-        self.sections.clear();
-        self.symbol_counts.clear();
+    /// Check if the symbol table is empty
+    pub fn is_empty(&self) -> bool {
+        self.by_address.is_empty()
+    }
+    
+    /// Find symbols by type
+    pub fn find_by_type(&self, sym_type: SymbolType) -> Vec<&Symbol> {
+        self.by_address
+            .values()
+            .filter(|sym| sym.symbol_type == sym_type)
+            .collect()
+    }
+    
+    /// Load a binary file and parse debug symbols
+    pub fn load_file(&mut self, path: &Path) -> Result<()> {
+        info!("Loading symbols from {:?}", path);
         
-        self.loading_progress = Some(0.0);
-        self.loading_status = "Loading file...".to_string();
+        let mut file = File::open(path)?;
+        let mut buffer = Vec::new();
+        file.read_to_end(&mut buffer)?;
         
-        // Read the file
-        let data = std::fs::read(path.as_ref())?;
-        
-        self.loading_progress = Some(0.1);
-        self.loading_status = "Parsing binary...".to_string();
-        
-        // Parse the binary
-        let binary = Object::parse(&data)?;
-        match binary {
-            Object::Mach(mach_obj) => {
-                self.binary_format = Some("Mach-O".to_string());
-                // We need to handle both fat and non-fat Mach-O binaries
-                match mach_obj {
-                    goblin::mach::Mach::Binary(mach_binary) => {
-                        self.architecture = Some(Self::cpu_type_to_arch(mach_binary.header.cputype));
-                        self.load_macho_symbols(&mach_binary)?;
-                    },
-                    goblin::mach::Mach::Fat(fat) => {
-                        // For fat binaries, find the ARM64 slice
-                        for i in 0..fat.narches {
-                            // Use direct get method to retrieve slice
-                            if let Ok(goblin::mach::SingleArch::MachO(mach_binary)) = fat.get(i) {
-                                // CPU_TYPE_ARM64 == 0x100000C
-                                if mach_binary.header.cputype == 0x0100_000C {
-                                    self.architecture = Some("arm64".to_string());
-                                    self.load_macho_symbols(&mach_binary)?;
-                                    break;
-                                }
-                            }
-                        }
-                    }
+        // Try to detect file format
+        if buffer.len() >= 4 {
+            let magic = u32::from_le_bytes([buffer[0], buffer[1], buffer[2], buffer[3]]);
+            match magic {
+                // Mach-O magic values
+                0xfeedfacf | 0xcffaedfe | 0xfeedface | 0xcefaedfe => {
+                    info!("Detected Mach-O file format");
+                    #[cfg(feature = "macho")]
+                    return self.load_macho_file(&buffer);
+                },
+                // ELF magic (0x7F 'E' 'L' 'F')
+                0x464c457f => {
+                    info!("Detected ELF file format");
+                    #[cfg(feature = "elf")]
+                    return self.load_elf_file(&buffer);
+                },
+                // PE magic (MZ header)
+                0x5a4d => {
+                    info!("Detected PE file format");
+                    #[cfg(feature = "pe")]
+                    return self.load_pe_file(&buffer);
+                },
+                _ => {
+                    warn!("Unknown binary format with magic value: {:x}", magic);
                 }
-            },
-            Object::Elf(elf) => {
-                self.binary_format = Some("ELF".to_string());
-                self.architecture = Some(Self::elf_machine_to_arch(elf.header.e_machine));
-                self.load_elf_symbols(&elf)?;
-            },
-            Object::PE(pe) => {
-                self.binary_format = Some("PE".to_string());
-                self.architecture = Some(Self::pe_machine_to_arch(pe.header.coff_header.machine));
-                warn!("PE symbol loading not fully implemented yet");
-                // self.load_pe_symbols(&pe)?;
-            },
-            _ => return Err(anyhow!("Unsupported binary format")),
+            }
         }
         
-        // Log symbol statistics
-        info!("Loaded {} symbols from {}", self.by_address.len(), path.as_ref().display());
-        for (symbol_type, count) in &self.symbol_counts {
-            info!("  {}: {}", symbol_type.as_str(), count);
+        Err(anyhow!("Unsupported binary format or failed to parse debug info"))
+    }
+    
+    /// Load symbols from Mach-O file using our custom parser
+    #[cfg(feature = "macho")]
+    pub fn load_macho_file(&mut self, data: &[u8]) -> Result<()> {
+        info!("Loading Mach-O symbols with custom parser");
+        
+        let parser = crate::debugger::macho_parser::parse_macho(data)?;
+        
+        // Load sections
+        for section in parser.get_sections() {
+            let section_flags = match section.is_code() {
+                true => SectionFlags::EXECUTABLE,
+                false => SectionFlags::READABLE | SectionFlags::WRITABLE,
+            };
+            
+            self.sections.push(Section::new(
+                section.name.clone(),
+                section.address,
+                section.size,
+                section_flags.bits()
+            ));
         }
         
-        info!("Found {} sections", self.sections.len());
-        let exec_sections = self.sections.iter().filter(|s| s.is_executable).count();
-        info!("  Executable sections: {}", exec_sections);
+        // Load symbols
+        for symbol in parser.get_symbols() {
+            let sym_type = match symbol.symbol_type {
+                crate::debugger::macho_parser::SymbolType::Function => SymbolType::Function,
+                crate::debugger::macho_parser::SymbolType::Data => SymbolType::GlobalVariable,
+                _ => SymbolType::Other,
+            };
+            
+            let symbol_obj = Symbol::new(
+                symbol.name.clone(),
+                symbol.address,
+                Some(symbol.size),
+                sym_type,
+                None,
+                None,
+                None,
+            );
+            
+            self.add_symbol(symbol_obj);
+        }
         
-        self.loading_progress = Some(1.0);
-        self.loading_status = format!("Loaded {} symbols", self.by_address.len());
+        info!("Loaded {} symbols and {} sections from Mach-O file", 
+              parser.get_symbols().len(), parser.get_sections().len());
         
         Ok(())
     }
@@ -513,138 +560,119 @@ impl SymbolTable {
         }
     }
     
+    // === Mach-O Abstractions and Conversion Layer ===
+
+    pub fn parse_macho_symbols(macho: &goblin::mach::MachO) -> Vec<MachOSymbol> {
+        let mut symbols = Vec::new();
+        // Exports
+        if let Ok(exports) = macho.exports() {
+            for export in exports {
+                symbols.push(MachOSymbol {
+                    name: export.name.clone(),
+                    address: export.offset as u64,
+                    size: export.size as u64,
+                    is_external: true,
+                    section_index: None,
+                    symbol_type: 0, // Assuming a default type
+                });
+            }
+        }
+        // Imports
+        if let Ok(imports) = macho.imports() {
+            for import in imports {
+                symbols.push(MachOSymbol {
+                    name: import.name.to_string(),
+                    address: import.offset as u64,
+                    size: import.size as u64,
+                    is_external: true,
+                    section_index: None,
+                    symbol_type: 0, // Assuming a default type
+                });
+            }
+        }
+        symbols
+    }
+
+    pub fn parse_macho_sections(macho: &goblin::mach::MachO) -> Vec<MachOSection> {
+        let mut sections = Vec::new();
+        for segment in &macho.segments {
+            let segment_name = segment.name().unwrap_or("[unnamed]");
+            let segment_start = segment.vmaddr as u64;
+            let segment_size = segment.vmsize as u64;
+            let segment_flags = segment.initprot as u64;
+            if segment_size > 0 && segment_start > 0 {
+                sections.push(MachOSection {
+                    name: format!("{}:segment", segment_name),
+                    address: segment_start,
+                    size: segment_size,
+                    offset: 0,
+                    align: 0, // Default alignment value since align_pow2 is not available
+                    reloff: 0,
+                    nreloc: 0,
+                    flags: segment_flags as u32,
+                });
+            }
+            if let Ok(gob_sections) = segment.sections() {
+                for (section, _) in gob_sections {
+                    if let Ok(section_name) = section.name() {
+                        let address = section.addr as u64;
+                        let size = section.size;
+                        let mut flags: u32 = 0;
+                        if section.flags & 0x80000000 != 0 { flags |= 1; }
+                        if section.flags & 0x00000001 != 0 { flags |= 1; }
+                        if size > 0 && address > 0 {
+                            sections.push(MachOSection {
+                                name: section_name.to_string(),
+                                address,
+                                size,
+                                offset: 0,
+                                align: 0, // Default alignment value since align_pow2 is not available
+                                reloff: 0,
+                                nreloc: 0,
+                                flags,
+                            });
+                        }
+                    }
+                }
+            }
+        }
+        sections
+    }
+
+    // === END: Mach-O Abstractions and Conversion Layer ===
+
     /// Load symbols from a Mach-O binary
     fn load_macho_symbols(&mut self, macho: &goblin::mach::MachO) -> Result<()> {
         self.loading_progress = Some(0.2);
         self.loading_status = "Loading Mach-O symbols...".to_string();
-        
-        // Load sections first
+        // Sections
         self.loading_progress = Some(0.3);
         self.loading_status = "Loading Mach-O sections...".to_string();
-        
-        // Process sections from each segment
-        for segment in &macho.segments {
-            debug!("Processing segment: {} (sections: {})", segment.name()?, segment.nsects);
-            
-            for section_result in segment.sections()? {
-                if let Ok((section_header, _)) = section_result {
-                    let name = section_header.name()?;
-                    let address = section_header.addr as u64;
-                    let size = section_header.size;
-                    
-                    // Parse flags to determine section attributes
-                    let flags = section_header.flags as u64;
-                    
-                    // Add to our section list
-                    self.sections.push(Section::new(
-                        name.to_string(),
-                        address,
-                        size,
-                        flags
-                    ));
-                    
-                    debug!("Added section: {} at 0x{:x} ({} bytes)", name, address, size);
-                }
-            }
+        let sections = Self::parse_macho_sections(macho);
+        for sec in sections {
+            self.sections.push(Section::new(sec.name, sec.address, sec.size, sec.flags as u64));
         }
-        
-        // Load symbols from symbol table
-        self.loading_progress = Some(0.4);
+        // Symbols
+        self.loading_progress = Some(0.5);
         self.loading_status = "Loading Mach-O symbols...".to_string();
-        
-        // We can't directly get the count of symbols, so we'll process them without a progress update
-        for symbol_result in macho.symbols.iter() {
-            if let Ok((name, nlist)) = symbol_result {
-                // Skip some system symbols
-                if name.starts_with("__") || name.is_empty() {
-                    continue;
-                }
-                
-                let address = nlist.n_value;
-                
-                // Determine symbol type
-                let symbol_type = match nlist.n_type & 0x0e {  // Type mask
-                    0x0e => SymbolType::Function,  // N_SECT with N_EXT in TEXT section
-                    0x02 => SymbolType::GlobalVariable,  // N_EXT with no N_SECT
-                    _ => {
-                        // If in a text section, likely a function
-                        if let Some(section_idx) = nlist.get_sect_idx() {
-                            if section_idx > 0 && section_idx <= self.sections.len() as u8 {
-                                let section = &self.sections[section_idx as usize - 1];
-                                if section.is_executable {
-                                    SymbolType::Function
-                                } else {
-                                    SymbolType::Data
-                                }
-                            } else {
-                                SymbolType::Other
-                            }
-                        } else {
-                            SymbolType::Other
-                        }
-                    }
-                };
-                
-                // Determine visibility
-                let visibility = if (nlist.n_type & 0x01) != 0 {  // N_EXT bit
-                    Some("global".to_string())
-                } else {
-                    Some("local".to_string())
-                };
-                
-                // Get section name
-                let section_name = if let Some(section_idx) = nlist.get_sect_idx() {
-                    if section_idx > 0 && section_idx <= self.sections.len() as u8 {
-                        Some(self.sections[section_idx as usize - 1].name.clone())
-                    } else {
-                        None
-                    }
-                } else {
-                    None
-                };
-                
-                // Determine binding
-                let binding = if (nlist.n_desc & 0x10) != 0 {  // N_WEAK_REF bit
-                    Some("weak".to_string())
-                } else if (nlist.n_type & 0x01) != 0 {  // N_EXT bit
-                    Some("global".to_string())
-                } else {
-                    Some("local".to_string())
-                };
-                
-                // Create the symbol
-                let symbol = Symbol::new_with_details(
-                    name.to_string(),
-                    address,
-                    None,  // Size not directly available
-                    symbol_type,
-                    None,  // Source file
-                    None,  // Line number
-                    visibility,
-                    section_name,
-                    binding,
-                );
-                
-                // Add the symbol
-                self.add_symbol(symbol);
-            }
+        let symbols = Self::parse_macho_symbols(macho);
+        for sym in symbols {
+            let symbol = Symbol::new_with_details(
+                sym.name,
+                sym.address,
+                Some(sym.size),
+                SymbolType::Function,
+                None,
+                None,
+                None,
+                None,
+                None,
+            );
+            self.add_symbol(symbol);
         }
-        
-        // Load dynamic symbols (from export trie if available)
-        self.loading_progress = Some(0.7);
-        self.loading_status = "Loading Mach-O dynamic symbols...".to_string();
-        
-        // We'll skip exports for now, as they're not directly accessible in the current goblin API
-        // We'll have to come back to this later
-        
-        // Build indices after loading all symbols
-        self.loading_progress = Some(0.9);
-        self.loading_status = "Building indices...".to_string();
         self.build_indices();
-        
         self.loading_progress = Some(1.0);
-        self.loading_status = format!("Loaded {} Mach-O symbols", self.by_address.len());
-        
+        self.loading_status = "Mach-O symbols loaded".to_string();
         Ok(())
     }
     
@@ -684,12 +712,23 @@ impl SymbolTable {
         self.loading_progress = Some(0.4);
         self.loading_status = "Loading ELF symbols...".to_string();
         
-        // Process a symbol from either the static or dynamic symbol table
-        let process_symbol = |sym: &goblin::elf::Sym, strtab: &goblin::strtab::Strtab, is_dynamic: bool| {
-            if let Some(name) = strtab.get_at(sym.st_name) {
+        // Let's collect all symbols first to avoid the closure borrow issues
+        let mut symbols_to_add = Vec::new();
+        
+        // Process regular symbols
+        let symbol_count = elf.syms.len();
+        for (i, sym) in elf.syms.iter().enumerate() {
+            // Update progress every 100 symbols
+            if i % 100 == 0 || i == symbol_count - 1 {
+                let progress = 0.4 + 0.2 * (i as f32 / symbol_count as f32);
+                self.loading_progress = Some(progress);
+                self.loading_status = format!("Loading ELF symbols... {}/{}", i + 1, symbol_count);
+            }
+            
+            if let Some(name) = elf.strtab.get_at(sym.st_name) {
                 // Skip empty names or special indices
                 if name.is_empty() || sym.st_shndx == 0 {
-                    return;
+                    continue;
                 }
                 
                 let address = sym.st_value;
@@ -721,7 +760,7 @@ impl SymbolTable {
                 if symbol_type == SymbolType::Other && 
                    (goblin::elf::sym::st_type(sym.st_info) == goblin::elf::sym::STT_SECTION ||
                     goblin::elf::sym::st_type(sym.st_info) == goblin::elf::sym::STT_FILE) {
-                    return;
+                    continue;
                 }
                 
                 // Determine visibility
@@ -762,22 +801,9 @@ impl SymbolTable {
                     binding,
                 );
                 
-                // Add the symbol
-                self.add_symbol(symbol);
+                // Add to our collection of symbols to add
+                symbols_to_add.push(symbol);
             }
-        };
-        
-        // Process regular symbols
-        let symbol_count = elf.syms.len();
-        for (i, sym) in elf.syms.iter().enumerate() {
-            // Update progress every 100 symbols
-            if i % 100 == 0 || i == symbol_count - 1 {
-                let progress = 0.4 + 0.2 * (i as f32 / symbol_count as f32);
-                self.loading_progress = Some(progress);
-                self.loading_status = format!("Loading ELF symbols... {}/{}", i + 1, symbol_count);
-            }
-            
-            process_symbol(&sym, &elf.strtab, false);
         }
         
         // Process dynamic symbols
@@ -793,7 +819,90 @@ impl SymbolTable {
                 self.loading_status = format!("Loading ELF dynamic symbols... {}/{}", i + 1, dynsym_count);
             }
             
-            process_symbol(&sym, &elf.dynstrtab, true);
+            if let Some(name) = elf.dynstrtab.get_at(sym.st_name) {
+                // Skip empty names or special indices
+                if name.is_empty() || sym.st_shndx == 0 {
+                    continue;
+                }
+                
+                let address = sym.st_value;
+                let size = if sym.st_size > 0 { Some(sym.st_size) } else { None };
+                
+                // Determine symbol type
+                let symbol_type = match goblin::elf::sym::st_type(sym.st_info) {
+                    goblin::elf::sym::STT_FUNC => SymbolType::Function,
+                    goblin::elf::sym::STT_OBJECT => SymbolType::GlobalVariable,
+                    goblin::elf::sym::STT_SECTION => SymbolType::Other, // Skip section symbols
+                    goblin::elf::sym::STT_FILE => SymbolType::Other,    // Skip file symbols
+                    _ => {
+                        // Check the section for additional context
+                        let section_idx = sym.st_shndx as usize;
+                        if section_idx < self.sections.len() {
+                            let section = &self.sections[section_idx];
+                            if section.is_executable {
+                                SymbolType::Function
+                            } else {
+                                SymbolType::Data
+                            }
+                        } else {
+                            SymbolType::Other
+                        }
+                    }
+                };
+                
+                // Skip section and file symbols
+                if symbol_type == SymbolType::Other && 
+                   (goblin::elf::sym::st_type(sym.st_info) == goblin::elf::sym::STT_SECTION ||
+                    goblin::elf::sym::st_type(sym.st_info) == goblin::elf::sym::STT_FILE) {
+                    continue;
+                }
+                
+                // Determine visibility
+                let bind = goblin::elf::sym::st_bind(sym.st_info);
+                let visibility = match bind {
+                    goblin::elf::sym::STB_GLOBAL => Some("global".to_string()),
+                    goblin::elf::sym::STB_LOCAL => Some("local".to_string()),
+                    goblin::elf::sym::STB_WEAK => Some("weak".to_string()),
+                    _ => None,
+                };
+                
+                // Get section name
+                let section_idx = sym.st_shndx as usize;
+                let section_name = if section_idx < self.sections.len() {
+                    Some(self.sections[section_idx].name.clone())
+                } else {
+                    None
+                };
+                
+                // Determine binding for consistency with Mach-O
+                let binding = match bind {
+                    goblin::elf::sym::STB_GLOBAL => Some("global".to_string()),
+                    goblin::elf::sym::STB_LOCAL => Some("local".to_string()),
+                    goblin::elf::sym::STB_WEAK => Some("weak".to_string()),
+                    _ => None,
+                };
+                
+                // Create the symbol
+                let symbol = Symbol::new_with_details(
+                    name.to_string(),
+                    address,
+                    size,
+                    symbol_type,
+                    None,  // Source file
+                    None,  // Line number
+                    visibility,
+                    section_name,
+                    binding,
+                );
+                
+                // Add to our collection of symbols to add
+                symbols_to_add.push(symbol);
+            }
+        }
+        
+        // Now add all symbols we collected
+        for symbol in symbols_to_add {
+            self.add_symbol(symbol);
         }
         
         // Build indices after loading all symbols
@@ -1129,4 +1238,5 @@ impl Default for SymbolTable {
         Self::new()
     }
 }
+
 
