@@ -1,16 +1,16 @@
 use std::cmp::min;
 use byteorder::{ByteOrder, LittleEndian};
 use ratatui::{
-    layout::{Alignment, Constraint, Direction, Layout, Rect},
-    style::{Color, Modifier, Style, Stylize},
-    text::{Line, Span, Text},
-    widgets::{
-        Block, Borders, Clear, List, ListItem, ListState, Paragraph, 
-        Row, Table, Tabs, Cell, Wrap
-    },
-    symbols,
-    Frame,
     backend::Backend,
+    layout::{Alignment, Constraint, Direction, Layout, Margin, Rect},
+    style::{Color, Modifier, Style, Stylize},
+    symbols,
+    text::{Line, Span},
+    widgets::{
+        Block, Borders, Cell, Clear, List, ListItem, ListState, Padding, 
+        Paragraph, Row, Table, Tabs, Wrap
+    },
+    Frame,
 };
 
 use crate::tui::app::{App, View, ActiveBlock};
@@ -338,8 +338,8 @@ pub fn draw_memory_view<B: Backend>(
         // Get current format
         let format_str = app.get_memory_format().as_str();
         let region_info = if let Some(debugger) = app.get_debugger().lock().ok() {
-            if let Some(mem_map) = debugger.get_memory_map() {
-                if let Some(region) = mem_map.find_region(memory_address) {
+            if let Some(_mem_map) = debugger.get_memory_map() {
+                if let Some(region) = _mem_map.find_region(memory_address) {
                     format!(
                         " | Region: {:016x}-{:016x} ({}) {}",
                         region.base,
@@ -649,7 +649,7 @@ pub fn draw_memory_view<B: Backend>(
             // Only try to get values if the offset is within data
             if cursor_offset < data.len() {
                 let debugger = app.get_debugger().lock().unwrap();
-                if let Some(mem_map) = debugger.get_memory_map() {
+                if let Some(_mem_map) = debugger.get_memory_map() {
                     // Add the basic u8 value
                     let byte_value = data[cursor_offset];
                     value_info.push(format!("u8: {} (0x{:02x})", byte_value, byte_value));

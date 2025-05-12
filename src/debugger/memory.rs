@@ -18,7 +18,7 @@ use mach2::vm::mach_vm_region;
 
 // New imports for enhanced memory inspector
 use anyhow::{anyhow, Result as AnyhowResult};
-use std::cmp::{min, max};
+use std::cmp::min;
 
 /// Memory search pattern type
 #[derive(Debug, Clone, PartialEq)]
@@ -714,7 +714,7 @@ impl MemoryMap {
     pub fn find_stack_regions(&self) -> Vec<&MemoryRegion> {
         self.regions
             .iter()
-            .filter(|r| r.name.as_ref().map_or(false, |n| n.contains("stack")))
+            .filter(|r| r.name.as_ref().is_some_and(|n| n.contains("stack")))
             .collect()
     }
 
@@ -722,7 +722,7 @@ impl MemoryMap {
     pub fn find_heap_regions(&self) -> Vec<&MemoryRegion> {
         self.regions
             .iter()
-            .filter(|r| r.name.as_ref().map_or(false, |n| n.contains("heap")))
+            .filter(|r| r.name.as_ref().is_some_and(|n| n.contains("heap")))
             .collect()
     }
     
@@ -938,5 +938,115 @@ impl MemoryFormat {
             Self::F32 => "f32",
             Self::F64 => "f64",
         }
+    }
+
+    pub fn format_value(&self, data: &[u8]) -> String {
+        match self {
+            Self::Hex => Self::format_as_hex(data),
+            Self::I32 => Self::format_as_i32(data),
+            Self::I64 => Self::format_as_i64(data),
+            Self::F32 => Self::format_as_f32(data),
+            Self::F64 => Self::format_as_f64(data),
+            // Handle the missing variants
+            Self::Ascii => "Ascii format not implemented yet".to_string(),
+            Self::Utf8 => "UTF-8 format not implemented yet".to_string(),
+            Self::Disassembly => "Disassembly format not implemented yet".to_string(),
+            Self::U8 => "U8 format not implemented yet".to_string(),
+            Self::U16 => "U16 format not implemented yet".to_string(),
+            Self::U32 => "U32 format not implemented yet".to_string(),
+            Self::U64 => "U64 format not implemented yet".to_string(),
+            Self::I8 => "I8 format not implemented yet".to_string(),
+            Self::I16 => "I16 format not implemented yet".to_string(),
+        }
+    }
+    
+    pub fn next(&self) -> Self {
+        match self {
+            Self::Hex => Self::I32,
+            Self::I32 => Self::I64,
+            Self::I64 => Self::F32,
+            Self::F32 => Self::F64,
+            Self::F64 => Self::Hex,
+            // Handle the missing variants
+            Self::Ascii => Self::Utf8,
+            Self::Utf8 => Self::Disassembly,
+            Self::Disassembly => Self::U8,
+            Self::U8 => Self::U16,
+            Self::U16 => Self::U32,
+            Self::U32 => Self::U64,
+            Self::U64 => Self::I8,
+            Self::I8 => Self::I16,
+            Self::I16 => Self::Hex,
+        }
+    }
+    
+    fn format_as_hex(data: &[u8]) -> String {
+        let mut result = String::new();
+        for chunk in data.chunks(16) {
+            let hex: Vec<String> = chunk.iter().map(|b| format!("{:02x}", b)).collect();
+            result.push_str(&hex.join(" "));
+            result.push('\n');
+        }
+        result
+    }
+
+    fn format_as_i32(data: &[u8]) -> String {
+        let mut result = String::new();
+        for chunk in data.chunks(16).filter(|c| c.len() >= 4) {
+            let mut values = Vec::new();
+            for i in (0..chunk.len()).step_by(4) {
+                if i + 3 < chunk.len() {
+                    values.push(format!("{}", LittleEndian::read_i32(&chunk[i..i+4])));
+                }
+            }
+            result.push_str(&values.join(" "));
+            result.push('\n');
+        }
+        result
+    }
+
+    fn format_as_i64(data: &[u8]) -> String {
+        let mut result = String::new();
+        for chunk in data.chunks(16).filter(|c| c.len() >= 8) {
+            let mut values = Vec::new();
+            for i in (0..chunk.len()).step_by(8) {
+                if i + 7 < chunk.len() {
+                    values.push(format!("{}", LittleEndian::read_i64(&chunk[i..i+8])));
+                }
+            }
+            result.push_str(&values.join(" "));
+            result.push('\n');
+        }
+        result
+    }
+
+    fn format_as_f32(data: &[u8]) -> String {
+        let mut result = String::new();
+        for chunk in data.chunks(16).filter(|c| c.len() >= 4) {
+            let mut values = Vec::new();
+            for i in (0..chunk.len()).step_by(4) {
+                if i + 3 < chunk.len() {
+                    values.push(format!("{:.6}", LittleEndian::read_f32(&chunk[i..i+4])));
+                }
+            }
+            result.push_str(&values.join(" "));
+            result.push('\n');
+        }
+        result
+    }
+
+    fn format_as_f64(data: &[u8]) -> String {
+        let mut result = String::new();
+        for chunk in data.chunks(16).filter(|c| c.len() >= 8) {
+            let mut values = Vec::new();
+            for i in (0..chunk.len()).step_by(8) {
+                if i + 7 < chunk.len() {
+                    values.push(format!("{:.6}", LittleEndian::read_f64(&chunk[i..i+8])));
+                }
+            }
+            result.push_str(&values.join(" "));
+            result.push('\n');
+        }
+        result
     }
 }

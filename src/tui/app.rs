@@ -30,10 +30,9 @@ use crossterm::event::EnableMouseCapture;
 use crossterm::event::DisableMouseCapture;
 use log::{debug, info, warn, error};
 use ratatui::backend::CrosstermBackend;
-use ratatui::layout::Rect;
+use ratatui::layout::{Alignment, Constraint, Layout, Rect};
 use ratatui::Terminal;
 use regex::Regex;
-use ratatui::layout::Direction;
 
 use crate::debugger::core::{Debugger, DebuggerState};
 use crate::debugger::breakpoint::Breakpoint;
