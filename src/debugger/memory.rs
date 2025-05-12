@@ -16,6 +16,43 @@ use mach2::port::mach_port_t;
 use mach2::traps::{mach_task_self, task_for_pid};
 use mach2::vm::mach_vm_region;
 
+// New imports for enhanced memory inspector
+use anyhow::{anyhow, Result as AnyhowResult};
+use std::cmp::{min, max};
+
+/// Memory search pattern type
+#[derive(Debug, Clone, PartialEq)]
+pub enum SearchPattern {
+    /// Raw bytes (exact match)
+    Bytes(Vec<u8>),
+    /// UTF-8 text (case-sensitive)
+    Text(String),
+    /// UTF-8 text (case-insensitive)
+    TextIgnoreCase(String),
+    /// Integer value with specific byte width
+    Integer(u64, usize),
+    /// Floating point value (approximate equality)
+    Float(f64, usize),
+}
+
+// Add a custom Eq implementation for SearchPattern that deliberately excludes Float variant from equality checks
+impl Eq for SearchPattern {
+    // No methods needed; Eq is a marker trait extending PartialEq
+}
+
+/// Memory search result
+#[derive(Debug, Clone)]
+pub struct SearchResult {
+    /// Address where the pattern was found
+    pub address: u64,
+    /// Context (bytes before and after match)
+    pub context: Vec<u8>,
+    /// Range of bytes that matched within context
+    pub match_range: Range<usize>,
+    /// Name of the memory region if available
+    pub region_name: Option<String>,
+}
+
 /// Memory protection flags
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Protection {
@@ -519,6 +556,313 @@ impl MemoryMap {
             result.push('\n');
         }
         result
+    }
+
+    /// Search memory for a pattern
+    pub fn search_memory(&self, memory_data: &[u8], base_address: u64, pattern: &SearchPattern) -> Vec<SearchResult> {
+        let mut results = Vec::new();
+        
+        match pattern {
+            SearchPattern::Bytes(bytes) => {
+                // Simple byte pattern search
+                for (i, window) in memory_data.windows(bytes.len()).enumerate() {
+                    if window == bytes.as_slice() {
+                        let match_address = base_address + i as u64;
+                        let result = self.create_search_result(memory_data, match_address, i, bytes.len());
+                        results.push(result);
+                    }
+                }
+            },
+            SearchPattern::Text(text) => {
+                let bytes = text.as_bytes();
+                for (i, window) in memory_data.windows(bytes.len()).enumerate() {
+                    if window == bytes {
+                        let match_address = base_address + i as u64;
+                        let result = self.create_search_result(memory_data, match_address, i, bytes.len());
+                        results.push(result);
+                    }
+                }
+            },
+            SearchPattern::TextIgnoreCase(text) => {
+                let lower_text = text.to_lowercase();
+                let bytes = lower_text.as_bytes();
+                for (i, window) in memory_data.windows(bytes.len()).enumerate() {
+                    // Convert window to lowercase for comparison
+                    let mut window_lower = Vec::with_capacity(window.len());
+                    for &b in window {
+                        if b.is_ascii_uppercase() {
+                            window_lower.push(b.to_ascii_lowercase());
+                        } else {
+                            window_lower.push(b);
+                        }
+                    }
+                    if window_lower == bytes {
+                        let match_address = base_address + i as u64;
+                        let result = self.create_search_result(memory_data, match_address, i, bytes.len());
+                        results.push(result);
+                    }
+                }
+            },
+            SearchPattern::Integer(value, width) => {
+                // Search for integer of specific width
+                match width {
+                    1 => {
+                        let byte_val = *value as u8;
+                        for (i, &b) in memory_data.iter().enumerate() {
+                            if b == byte_val {
+                                let match_address = base_address + i as u64;
+                                let result = self.create_search_result(memory_data, match_address, i, 1);
+                                results.push(result);
+                            }
+                        }
+                    },
+                    2 => {
+                        let val = *value as u16;
+                        for (i, chunk) in memory_data.windows(2).enumerate() {
+                            if LittleEndian::read_u16(chunk) == val {
+                                let match_address = base_address + i as u64;
+                                let result = self.create_search_result(memory_data, match_address, i, 2);
+                                results.push(result);
+                            }
+                        }
+                    },
+                    4 => {
+                        let val = *value as u32;
+                        for (i, chunk) in memory_data.windows(4).enumerate() {
+                            if LittleEndian::read_u32(chunk) == val {
+                                let match_address = base_address + i as u64;
+                                let result = self.create_search_result(memory_data, match_address, i, 4);
+                                results.push(result);
+                            }
+                        }
+                    },
+                    8 => {
+                        let val = *value;
+                        for (i, chunk) in memory_data.windows(8).enumerate() {
+                            if LittleEndian::read_u64(chunk) == val {
+                                let match_address = base_address + i as u64;
+                                let result = self.create_search_result(memory_data, match_address, i, 8);
+                                results.push(result);
+                            }
+                        }
+                    },
+                    _ => {
+                        // Unsupported width
+                    }
+                }
+            },
+            SearchPattern::Float(value, width) => {
+                // Search for float of specific width
+                match width {
+                    4 => {
+                        let val = *value as f32;
+                        for (i, chunk) in memory_data.windows(4).enumerate() {
+                            let float_val = LittleEndian::read_f32(chunk);
+                            if (float_val - val).abs() < f32::EPSILON {
+                                let match_address = base_address + i as u64;
+                                let result = self.create_search_result(memory_data, match_address, i, 4);
+                                results.push(result);
+                            }
+                        }
+                    },
+                    8 => {
+                        let val = *value;
+                        for (i, chunk) in memory_data.windows(8).enumerate() {
+                            let float_val = LittleEndian::read_f64(chunk);
+                            if (float_val - val).abs() < f64::EPSILON {
+                                let match_address = base_address + i as u64;
+                                let result = self.create_search_result(memory_data, match_address, i, 8);
+                                results.push(result);
+                            }
+                        }
+                    },
+                    _ => {
+                        // Unsupported width
+                    }
+                }
+            }
+        }
+        
+        results
+    }
+    
+    /// Find the next memory region after the given address
+    pub fn find_next_region(&self, current_address: u64) -> Option<&MemoryRegion> {
+        self.regions
+            .iter()
+            .filter(|r| r.base > current_address)
+            .min_by_key(|r| r.base)
+    }
+    
+    /// Find the previous memory region before the given address
+    pub fn find_prev_region(&self, current_address: u64) -> Option<&MemoryRegion> {
+        self.regions
+            .iter()
+            .filter(|r| r.base < current_address)
+            .max_by_key(|r| r.base)
+    }
+    
+    /// Find all executable regions (potential code)
+    pub fn find_executable_regions(&self) -> Vec<&MemoryRegion> {
+        self.regions
+            .iter()
+            .filter(|r| r.protection.can_execute())
+            .collect()
+    }
+
+    /// Find all stack regions
+    pub fn find_stack_regions(&self) -> Vec<&MemoryRegion> {
+        self.regions
+            .iter()
+            .filter(|r| r.name.as_ref().map_or(false, |n| n.contains("stack")))
+            .collect()
+    }
+
+    /// Find all heap regions
+    pub fn find_heap_regions(&self) -> Vec<&MemoryRegion> {
+        self.regions
+            .iter()
+            .filter(|r| r.name.as_ref().map_or(false, |n| n.contains("heap")))
+            .collect()
+    }
+    
+    /// Create a search result with context
+    fn create_search_result(&self, data: &[u8], match_address: u64, match_index: usize, match_len: usize) -> SearchResult {
+        // Create a context window around the match (16 bytes before and after)
+        const CONTEXT_SIZE: usize = 16;
+        let start_idx = match_index.saturating_sub(CONTEXT_SIZE);
+        let end_idx = min(match_index + match_len + CONTEXT_SIZE, data.len());
+        
+        let context = data[start_idx..end_idx].to_vec();
+        let match_range = (match_index - start_idx)..(match_index - start_idx + match_len);
+        
+        // Find the memory region for this address
+        let region_name = self.find_region(match_address)
+            .and_then(|r| r.name.clone());
+        
+        SearchResult {
+            address: match_address,
+            context,
+            match_range,
+            region_name,
+        }
+    }
+    
+    /// Parse a value from a memory buffer at an offset
+    pub fn parse_value(&self, data: &[u8], offset: usize, format: MemoryFormat) -> AnyhowResult<String> {
+        if offset >= data.len() {
+            return Err(anyhow!("Offset {} out of bounds (data length: {})", offset, data.len()));
+        }
+        
+        match format {
+            MemoryFormat::U8 => {
+                if offset < data.len() {
+                    Ok(format!("{}", data[offset]))
+                } else {
+                    Err(anyhow!("Invalid data offset for u8"))
+                }
+            },
+            MemoryFormat::I8 => {
+                if offset < data.len() {
+                    Ok(format!("{}", data[offset] as i8))
+                } else {
+                    Err(anyhow!("Invalid data offset for i8"))
+                }
+            },
+            MemoryFormat::U16 => {
+                if offset + 1 < data.len() {
+                    Ok(format!("{}", LittleEndian::read_u16(&data[offset..])))
+                } else {
+                    Err(anyhow!("Invalid data offset for u16"))
+                }
+            },
+            MemoryFormat::I16 => {
+                if offset + 1 < data.len() {
+                    Ok(format!("{}", LittleEndian::read_i16(&data[offset..])))
+                } else {
+                    Err(anyhow!("Invalid data offset for i16"))
+                }
+            },
+            MemoryFormat::U32 => {
+                if offset + 3 < data.len() {
+                    Ok(format!("{}", LittleEndian::read_u32(&data[offset..])))
+                } else {
+                    Err(anyhow!("Invalid data offset for u32"))
+                }
+            },
+            MemoryFormat::I32 => {
+                if offset + 3 < data.len() {
+                    Ok(format!("{}", LittleEndian::read_i32(&data[offset..])))
+                } else {
+                    Err(anyhow!("Invalid data offset for i32"))
+                }
+            },
+            MemoryFormat::U64 => {
+                if offset + 7 < data.len() {
+                    Ok(format!("{}", LittleEndian::read_u64(&data[offset..])))
+                } else {
+                    Err(anyhow!("Invalid data offset for u64"))
+                }
+            },
+            MemoryFormat::I64 => {
+                if offset + 7 < data.len() {
+                    Ok(format!("{}", LittleEndian::read_i64(&data[offset..])))
+                } else {
+                    Err(anyhow!("Invalid data offset for i64"))
+                }
+            },
+            MemoryFormat::F32 => {
+                if offset + 3 < data.len() {
+                    Ok(format!("{:.6}", LittleEndian::read_f32(&data[offset..])))
+                } else {
+                    Err(anyhow!("Invalid data offset for f32"))
+                }
+            },
+            MemoryFormat::F64 => {
+                if offset + 7 < data.len() {
+                    Ok(format!("{:.6}", LittleEndian::read_f64(&data[offset..])))
+                } else {
+                    Err(anyhow!("Invalid data offset for f64"))
+                }
+            },
+            MemoryFormat::Hex => {
+                if offset < data.len() {
+                    Ok(format!("{:02x}", data[offset]))
+                } else {
+                    Err(anyhow!("Invalid data offset for hex"))
+                }
+            },
+            MemoryFormat::Ascii => {
+                if offset < data.len() {
+                    let ch = if (32..=126).contains(&data[offset]) {
+                        data[offset] as char
+                    } else {
+                        '.'
+                    };
+                    Ok(format!("{}", ch))
+                } else {
+                    Err(anyhow!("Invalid data offset for ASCII"))
+                }
+            },
+            MemoryFormat::Utf8 => {
+                if offset < data.len() {
+                    let mut end = offset + 1;
+                    while end < data.len() && (data[end] & 0xC0) == 0x80 {
+                        end += 1;
+                    }
+                    
+                    match std::str::from_utf8(&data[offset..end]) {
+                        Ok(s) => Ok(s.to_string()),
+                        Err(_) => Ok(".".to_string()),
+                    }
+                } else {
+                    Err(anyhow!("Invalid data offset for UTF-8"))
+                }
+            },
+            MemoryFormat::Disassembly => {
+                Err(anyhow!("Disassembly format requires a special handler"))
+            },
+        }
     }
 }
 

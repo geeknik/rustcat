@@ -18,6 +18,7 @@ use std::sync::mpsc;
 
 use crate::tui::app::{App, View, ActiveBlock, LogFilter, UiMode};
 use crate::tui::views::{CodeView, CommandView, draw_memory_view, draw_thread_view, draw_call_stack_view, draw_registers_view, draw_trace_view, VariablesView};
+use crate::debugger::memory::MemoryFormat;
 
 /// Set up log capturing for UI display
 pub fn setup_log_capture() -> mpsc::Receiver<String> {
@@ -214,23 +215,70 @@ fn draw_main_area<B: Backend>(f: &mut Frame<B>, app: &App, area: Rect) {
                 // Display memory data
                 draw_memory_view(f, app, chunks[0], Some(data), address);
                 
-                // Display format selector
-                let format_names = [
-                    "Hex", "ASCII", "UTF8", "U8", "U16", "U32", "U64", "F32", "F64"
-                ];
+                // Display format selector with current format highlighted
+                let current_format = app.get_memory_format();
+                let format_styles: Vec<Span> = MemoryFormat::all().iter().map(|format| {
+                    if *format == current_format {
+                        Span::styled(format.as_str(), Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD))
+                    } else {
+                        Span::styled(format.as_str(), Style::default())
+                    }
+                }).collect();
                 
-                let _current_format = app.get_memory_format().as_str();
-                let format_text = format!("Format: [{}]", format_names.join("] ["));
+                // Join the spans with separators
+                let mut format_line = Vec::new();
+                format_line.push(Span::styled("Format: ", Style::default().fg(Color::Cyan)));
                 
-                let paragraph = Paragraph::new(format_text)
+                for (i, span) in format_styles.into_iter().enumerate() {
+                    if i > 0 {
+                        format_line.push(Span::raw(" | "));
+                    }
+                    format_line.push(span);
+                }
+                
+                let paragraph = Paragraph::new(Line::from(format_line))
                     .style(Style::default())
                     .alignment(Alignment::Center)
                     .block(Block::default().borders(Borders::TOP));
                 
                 f.render_widget(paragraph, chunks[1]);
             } else {
-                // No memory loaded yet, show empty view
-                draw_memory_view(f, app, area, None, 0);
+                // No memory loaded yet, show empty view with help text
+                let empty_block = Block::default()
+                    .borders(Borders::ALL)
+                    .border_style(Style::default().fg(if app.current_view == View::Memory {
+                        Color::Green
+                    } else {
+                        Color::Gray
+                    }));
+                
+                let help_text = vec![
+                    Line::from(Span::styled(
+                        "Memory Inspector - No Data Loaded",
+                        Style::default().fg(Color::Yellow)
+                    )),
+                    Line::from(""),
+                    Line::from("Use 'memory <address> <size>' to view memory."),
+                    Line::from("Example: memory 0x1000 256"),
+                    Line::from(""),
+                    Line::from("Commands:"),
+                    Line::from(vec![
+                        Span::styled("/", Style::default().fg(Color::Green)),
+                        Span::raw(": Search, "),
+                        Span::styled("g", Style::default().fg(Color::Green)),
+                        Span::raw(": Jump to address, "),
+                        Span::styled("e", Style::default().fg(Color::Green)),
+                        Span::raw(": Edit byte, "),
+                        Span::styled("w", Style::default().fg(Color::Green)),
+                        Span::raw(": Set watchpoint"),
+                    ]),
+                ];
+                
+                let paragraph = Paragraph::new(help_text)
+                    .block(empty_block)
+                    .alignment(Alignment::Center);
+                
+                f.render_widget(paragraph, area);
             }
         },
         View::Registers => {

@@ -1660,6 +1660,11 @@ impl Debugger {
     pub fn get_watchpoints(&self) -> &[Watchpoint] {
         self.watchpoints.get_all()
     }
+
+    /// Get a reference to the memory map
+    pub fn get_memory_map(&self) -> Option<&MemoryMap> {
+        self.memory_map.as_ref()
+    }
 }
 
 impl Drop for Debugger {
