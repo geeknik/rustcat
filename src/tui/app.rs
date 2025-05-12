@@ -21,22 +21,24 @@ use std::time::{Duration, Instant};
 use std::sync::mpsc;
 use std::fs::File;
 use std::io::Write;
+use std::rc::Rc;
+use std::cell::RefCell;
 
 use anyhow::{Result, Context, anyhow};
-use crossterm::event::{Event, KeyCode, KeyModifiers, MouseEventKind, MouseButton, KeyEvent};
+use crossterm::event::{Event, KeyCode, KeyModifiers, MouseEventKind, MouseButton};
 use crossterm::terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen};
 use crossterm::execute;
 use crossterm::event::EnableMouseCapture;
 use crossterm::event::DisableMouseCapture;
 use log::{debug, info, warn, error};
 use ratatui::backend::CrosstermBackend;
-use ratatui::layout::{Alignment, Constraint, Layout, Rect};
+use ratatui::layout::Rect;
 use ratatui::Terminal;
 use regex::Regex;
 
 use crate::debugger::core::{Debugger, DebuggerState};
 use crate::debugger::breakpoint::Breakpoint;
-use crate::debugger::memory::{MemoryFormat, SearchPattern, SearchResult};
+use crate::debugger::memory::MemoryFormat;
 use crate::tui::ui::draw_ui;
 use crate::tui::ui::setup_log_capture;
 use crate::tui::events::Events;
@@ -157,13 +159,15 @@ pub struct QueuedCommand {
     retries: usize,
 }
 
-/// Application state
+/// Main application state
 pub struct App {
     /// The debugger instance
     pub debugger: Arc<Mutex<Debugger>>,
+    /// A reference to the debugger core for direct access
+    pub debugger_core: Option<Rc<RefCell<Debugger>>>,
     /// Is the application running?
-    pub running: bool,
-    /// Current view 
+    running: bool,
+    /// Current main view
     pub current_view: View,
     /// Currently active/focused UI block
     pub active_block: ActiveBlock,
@@ -284,50 +288,12 @@ pub struct App {
     pub max_frame_time: Duration,
     /// Display performance metrics
     pub show_performance: bool,
-    /// Current memory view cursor position
-    pub memory_cursor: (usize, usize), // (row, column)
-    
-    /// Memory view selection state (start position if Some)
-    pub memory_selection: Option<(usize, usize)>,
-    
-    /// Memory view scroll offset (row)
-    pub memory_scroll: usize,
-    
-    /// Memory search pattern
-    pub memory_search_pattern: Option<SearchPattern>,
-    
-    /// Memory search results
-    pub memory_search_results: Vec<SearchResult>,
-    
-    /// Current search result index
-    pub memory_search_index: usize,
-    
-    /// Memory search mode (active searching)
-    pub memory_search_mode: bool,
-    
-    /// Memory search input text
-    pub memory_search_input: String,
-    
-    /// Memory currently in edit mode
-    pub memory_edit_mode: bool,
-    
-    /// Memory edit buffer
-    pub memory_edit_buffer: String,
-    
-    /// Memory view status
-    pub memory_status: String,
-    
-    /// Memory view is in address jump mode
-    pub memory_jump_mode: bool,
-    
-    /// Memory jump input
-    pub memory_jump_input: String,
-    
-    /// Memory navigation history (addresses)
-    pub memory_history: Vec<u64>,
-    
-    /// Current position in memory history
-    pub memory_history_pos: usize,
+    /// Current source code context from DWARF
+    pub current_source_context: Option<(String, Vec<(u64, String, bool)>)>,
+    /// Source view scroll position
+    pub source_scroll: usize,
+    /// Is DWARF debug info enabled
+    dwarf_enabled: bool,
 }
 
 /// Available views in the application
@@ -341,15 +307,7 @@ pub enum View {
     Command,
     Trace,
     Variables,
-}
-
-/// Direction enum for memory cursor movement
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum CursorDirection {
-    Up,
-    Down,
-    Left,
-    Right,
+    Source,  // New view for source code display with DWARF debug info
 }
 
 impl App {
@@ -383,6 +341,7 @@ impl App {
         
         Ok(Self {
             debugger,
+            debugger_core: None,
             running: true,
             current_view: View::Code,
             active_block: ActiveBlock::MainView,
@@ -443,22 +402,9 @@ impl App {
             avg_frame_time: Duration::from_micros(0),
             max_frame_time: Duration::from_micros(0),
             show_performance: true,
-            
-            memory_cursor: (0, 0),
-            memory_selection: None,
-            memory_scroll: 0,
-            memory_search_pattern: None,
-            memory_search_results: Vec::new(),
-            memory_search_index: 0,
-            memory_search_mode: false,
-            memory_search_input: String::new(),
-            memory_edit_mode: false,
-            memory_edit_buffer: String::new(),
-            memory_status: String::new(),
-            memory_jump_mode: false,
-            memory_jump_input: String::new(),
-            memory_history: Vec::new(),
-            memory_history_pos: 0,
+            dwarf_enabled: true,
+            current_source_context: None,
+            source_scroll: 0,
         })
     }
 
@@ -538,28 +484,18 @@ impl App {
     
     /// Navigate to next search result
     pub fn next_search_result(&mut self) {
-        // Keep existing log search functionality for log view
-        if !self.log_search_results.is_empty() && (self.current_view == View::Command || self.current_view == View::Trace) {
+        if !self.log_search_results.is_empty() {
             self.log_search_index = (self.log_search_index + 1) % self.log_search_results.len();
             // Update scroll position to show the current result
             if let Some(&result_idx) = self.log_search_results.get(self.log_search_index) {
                 self.log_scroll = result_idx;
             }
-        } 
-        // Add memory search functionality
-        else if !self.memory_search_results.is_empty() && self.current_view == View::Memory {
-            self.memory_search_index = (self.memory_search_index + 1) % self.memory_search_results.len();
-            let result = &self.memory_search_results[self.memory_search_index];
-            
-            self.jump_to_memory_address(result.address);
-            self.memory_status = format!("Result {}/{}", self.memory_search_index + 1, self.memory_search_results.len());
         }
     }
     
     /// Navigate to previous search result
     pub fn prev_search_result(&mut self) {
-        // Keep existing log search functionality for log view
-        if !self.log_search_results.is_empty() && (self.current_view == View::Command || self.current_view == View::Trace) {
+        if !self.log_search_results.is_empty() {
             self.log_search_index = if self.log_search_index == 0 {
                 self.log_search_results.len() - 1
             } else {
@@ -569,19 +505,6 @@ impl App {
             if let Some(&result_idx) = self.log_search_results.get(self.log_search_index) {
                 self.log_scroll = result_idx;
             }
-        }
-        // Add memory search functionality 
-        else if !self.memory_search_results.is_empty() && self.current_view == View::Memory {
-            if self.memory_search_index == 0 {
-                self.memory_search_index = self.memory_search_results.len() - 1;
-            } else {
-                self.memory_search_index -= 1;
-            }
-            
-            let result = &self.memory_search_results[self.memory_search_index];
-            
-            self.jump_to_memory_address(result.address);
-            self.memory_status = format!("Result {}/{}", self.memory_search_index + 1, self.memory_search_results.len());
         }
     }
     
@@ -774,7 +697,8 @@ impl App {
                 if let Some(address) = address {
                     // Re-acquire the lock to set the watchpoint
                     if let Ok(mut debugger) = self.debugger.lock() {
-                        if let Err(e) = debugger.set_watchpoint(address, 8, WatchpointType::Read) {
+                        // Default to watching 8 bytes (64-bit)
+                        if let Err(e) = debugger.set_hardware_watchpoint(address, 8, WatchpointType::Read) {
                             error!("Failed to set read watchpoint: {}", e);
                         } else {
                             info!("Set read watchpoint at 0x{:x}", address);
@@ -794,7 +718,8 @@ impl App {
                 if let Some(address) = address {
                     // Re-acquire the lock to set the watchpoint
                     if let Ok(mut debugger) = self.debugger.lock() {
-                        if let Err(e) = debugger.set_watchpoint(address, 8, WatchpointType::Write) {
+                        // Default to watching 8 bytes (64-bit)
+                        if let Err(e) = debugger.set_hardware_watchpoint(address, 8, WatchpointType::Write) {
                             error!("Failed to set write watchpoint: {}", e);
                         } else {
                             info!("Set write watchpoint at 0x{:x}", address);
@@ -814,7 +739,8 @@ impl App {
                 if let Some(address) = address {
                     // Re-acquire the lock to set the watchpoint
                     if let Ok(mut debugger) = self.debugger.lock() {
-                        if let Err(e) = debugger.set_watchpoint(address, 8, WatchpointType::ReadWrite) {
+                        // Default to watching 8 bytes (64-bit)
+                        if let Err(e) = debugger.set_hardware_watchpoint(address, 8, WatchpointType::ReadWrite) {
                             error!("Failed to set read/write watchpoint: {}", e);
                         } else {
                             info!("Set read/write watchpoint at 0x{:x}", address);
@@ -834,10 +760,10 @@ impl App {
                 if let Some(address) = address_opt {
                     // Re-acquire the lock to remove the watchpoint
                     if let Ok(mut debugger) = self.debugger.lock() {
-                        if let Err(e) = debugger.remove_watchpoint(address) {
-                            error!("Failed to remove watchpoint: {}", e);
+                        if let Err(e) = debugger.remove_hardware_watchpoint(address) {
+                            error!("Failed to remove watchpoint {}: {}", expr, e);
                         } else {
-                            info!("Removed watchpoint at 0x{:x}", address);
+                            info!("Removed watchpoint {}", expr);
                         }
                     }
                 } else {
@@ -1637,904 +1563,24 @@ impl App {
         (self.avg_frame_time, self.max_frame_time, self.avg_frame_time > Duration::from_millis(10))
     }
 
-    /// Move memory cursor
-    pub fn move_memory_cursor(&mut self, direction: CursorDirection, data_len: usize, bytes_per_row: usize) {
-        if data_len == 0 {
-            return;
-        }
-        
-        let (row, col) = self.memory_cursor;
-        let rows = (data_len + bytes_per_row - 1) / bytes_per_row;
-        
-        let new_pos = match direction {
-            CursorDirection::Up => {
-                if row > 0 {
-                    (row - 1, col)
-                } else {
-                    (row, col)
-                }
-            },
-            CursorDirection::Down => {
-                if row < rows - 1 {
-                    (row + 1, col)
-                } else {
-                    (row, col)
-                }
-            },
-            CursorDirection::Left => {
-                if col > 0 {
-                    (row, col - 1)
-                } else if row > 0 {
-                    (row - 1, bytes_per_row - 1) // Wrap to end of previous row
-                } else {
-                    (row, col)
-                }
-            },
-            CursorDirection::Right => {
-                let last_row_len = if row == rows - 1 {
-                    data_len % bytes_per_row
-                } else {
-                    bytes_per_row
-                };
-                
-                if col < last_row_len - 1 {
-                    (row, col + 1)
-                } else if row < rows - 1 {
-                    (row + 1, 0) // Wrap to start of next row
-                } else {
-                    (row, col)
-                }
-            },
-        };
-        
-        self.memory_cursor = new_pos;
-        
-        // Ensure cursor is visible by adjusting scroll if needed
-        let visible_rows = 20; // Approximate number of visible rows
-        if self.memory_cursor.0 < self.memory_scroll {
-            self.memory_scroll = self.memory_cursor.0;
-        } else if self.memory_cursor.0 >= self.memory_scroll + visible_rows {
-            self.memory_scroll = self.memory_cursor.0 - visible_rows + 1;
-        }
+    /// Check if DWARF debugging is enabled
+    pub fn is_dwarf_enabled(&self) -> bool {
+        self.dwarf_enabled
     }
     
-    /// Get the absolute offset for current memory cursor
-    pub fn get_memory_cursor_offset(&self, bytes_per_row: usize) -> usize {
-        let (row, col) = self.memory_cursor;
-        (row * bytes_per_row) + col
+    /// Enable or disable DWARF debugging
+    pub fn set_dwarf_enabled(&mut self, enabled: bool) {
+        // For now, just store the state without trying to update the controller
+        self.dwarf_enabled = enabled;
+        debug!("DWARF debugging {}", if enabled { "enabled" } else { "disabled" });
     }
     
-    /// Get the address for current memory cursor
-    pub fn get_memory_cursor_address(&self, base_address: u64, bytes_per_row: usize) -> u64 {
-        let offset = self.get_memory_cursor_offset(bytes_per_row);
-        base_address + offset as u64
-    }
-    
-    /// Start memory selection from cursor
-    pub fn start_memory_selection(&mut self) {
-        self.memory_selection = Some(self.memory_cursor);
-    }
-    
-    /// End memory selection and return selected range
-    pub fn end_memory_selection(&mut self, bytes_per_row: usize) -> Option<(usize, usize)> {
-        if let Some(start_pos) = self.memory_selection {
-            let end_pos = self.memory_cursor;
-            
-            // Convert 2D positions to flat offsets
-            let start_offset = start_pos.0 * bytes_per_row + start_pos.1;
-            let end_offset = end_pos.0 * bytes_per_row + end_pos.1;
-            
-            let range = if start_offset <= end_offset {
-                (start_offset, end_offset + 1)
-            } else {
-                (end_offset, start_offset + 1)
-            };
-            
-            self.memory_selection = None;
-            Some(range)
-        } else {
-            None
-        }
-    }
-    
-    /// Reset memory selection
-    pub fn reset_memory_selection(&mut self) {
-        self.memory_selection = None;
-    }
-    
-    /// Check if a position is within the current selection range
-    pub fn is_position_selected(&self, row: usize, col: usize, bytes_per_row: usize) -> bool {
-        if let Some(start_pos) = self.memory_selection {
-            let current_pos = self.memory_cursor;
-            
-            // Convert 2D positions to flat offsets
-            let start_offset = start_pos.0 * bytes_per_row + start_pos.1;
-            let end_offset = current_pos.0 * bytes_per_row + current_pos.1;
-            let pos_offset = row * bytes_per_row + col;
-            
-            if start_offset <= end_offset {
-                pos_offset >= start_offset && pos_offset <= end_offset
-            } else {
-                pos_offset >= end_offset && pos_offset <= start_offset
-            }
-        } else {
-            false
-        }
-    }
-    
-    /// Jump to memory address
-    pub fn jump_to_memory_address(&mut self, address: u64) {
-        if let Some((base_addr, data)) = &self.memory_data {
-            if address >= *base_addr && address < *base_addr + data.len() as u64 {
-                // Address is in current range, move cursor
-                let offset = (address - *base_addr) as usize;
-                let bytes_per_row = 16; // Standard bytes per row
-                let row = offset / bytes_per_row;
-                let col = offset % bytes_per_row;
-                
-                self.memory_cursor = (row, col);
-                
-                // Also update scroll
-                let visible_rows = 20; // Approximate
-                if row < self.memory_scroll || row >= self.memory_scroll + visible_rows {
-                    self.memory_scroll = row.saturating_sub(5); // Position with some context
-                }
-                
-                // Add to history if it's a new address
-                self.add_to_memory_history(address);
-            } else {
-                // Need to request new memory region
-                self.memory_status = format!("Loading memory at 0x{:x}...", address);
-                
-                // Add to history
-                self.add_to_memory_history(address);
-                
-                // This would be followed by a memory read operation elsewhere,
-                // which happens asynchronously
-            }
-        } else {
-            // No memory loaded yet, just record the navigation intent
-            self.memory_status = format!("No memory data loaded. Request memory at 0x{:x} first.", address);
-        }
-    }
-    
-    /// Add address to memory navigation history
-    fn add_to_memory_history(&mut self, address: u64) {
-        // Don't add duplicates
-        if self.memory_history.last() == Some(&address) {
-            return;
-        }
-        
-        // If we're not at the end of history, truncate
-        if self.memory_history_pos < self.memory_history.len() - 1 {
-            self.memory_history.truncate(self.memory_history_pos + 1);
-        }
-        
-        // Add the new address
-        self.memory_history.push(address);
-        self.memory_history_pos = self.memory_history.len() - 1;
-        
-        // Cap history size
-        const MAX_HISTORY_SIZE: usize = 100;
-        if self.memory_history.len() > MAX_HISTORY_SIZE {
-            self.memory_history.remove(0);
-            self.memory_history_pos = self.memory_history.len() - 1;
-        }
-    }
-    
-    /// Navigate back in memory history
-    pub fn memory_history_back(&mut self) -> Option<u64> {
-        if self.memory_history_pos > 0 {
-            self.memory_history_pos -= 1;
-            Some(self.memory_history[self.memory_history_pos])
-        } else {
-            None
-        }
-    }
-    
-    /// Navigate forward in memory history
-    pub fn memory_history_forward(&mut self) -> Option<u64> {
-        if self.memory_history_pos < self.memory_history.len() - 1 {
-            self.memory_history_pos += 1;
-            Some(self.memory_history[self.memory_history_pos])
-        } else {
-            None
-        }
-    }
-    
-    /// Start memory search
-    pub fn start_memory_search(&mut self) {
-        self.memory_search_mode = true;
-        self.memory_search_input.clear();
-        self.memory_status = "Search: ".to_string();
-    }
-    
-    /// Cancel memory search
-    pub fn cancel_memory_search(&mut self) {
-        self.memory_search_mode = false;
-        self.memory_search_input.clear();
-        self.memory_status = "Search canceled".to_string();
-    }
-    
-    /// Start memory edit mode
-    pub fn start_memory_edit(&mut self) {
-        self.memory_edit_mode = true;
-        self.memory_edit_buffer.clear();
-        self.memory_status = "Edit mode: Enter hex value".to_string();
-    }
-    
-    /// Cancel memory edit mode
-    pub fn cancel_memory_edit(&mut self) {
-        self.memory_edit_mode = false;
-        self.memory_edit_buffer.clear();
-        self.memory_status = "Edit canceled".to_string();
-    }
-    
-    /// Start memory address jump mode
-    pub fn start_memory_jump(&mut self) {
-        self.memory_jump_mode = true;
-        self.memory_jump_input.clear();
-        self.memory_status = "Jump to address: 0x".to_string();
-    }
-    
-    /// Cancel memory jump mode
-    pub fn cancel_memory_jump(&mut self) {
-        self.memory_jump_mode = false;
-        self.memory_jump_input.clear();
-        self.memory_status = "Jump canceled".to_string();
-    }
-    
-    /// Execute memory search with current input
-    pub fn execute_memory_search(&mut self) -> Result<()> {
-        let input = self.memory_search_input.trim();
-        if input.is_empty() {
-            self.memory_search_mode = false;
-            self.memory_status = "Search canceled - empty query".to_string();
-            return Ok(());
-        }
-        
-        let pattern = if input.starts_with("0x") || input.starts_with("0X") {
-            // Hex bytes search
-            match hex::decode(&input[2..]) {
-                Ok(bytes) => SearchPattern::Bytes(bytes),
-                Err(_) => {
-                    self.memory_status = "Invalid hex format".to_string();
-                    return Err(anyhow!("Invalid hex format"));
-                }
-            }
-        } else if input.starts_with('"') && input.ends_with('"') {
-            // Quoted text search
-            let text = &input[1..input.len() - 1];
-            SearchPattern::Text(text.to_string())
-        } else if input.starts_with('i') && input.contains(':') {
-            // Integer search
-            let parts: Vec<&str> = input.split(':').collect();
-            if parts.len() != 2 {
-                self.memory_status = "Invalid integer format. Use i8:123, i16:0xff, etc.".to_string();
-                return Err(anyhow!("Invalid integer format"));
-            }
-            
-            let type_str = parts[0];
-            let value_str = parts[1];
-            
-            let width = match type_str {
-                "i8" | "u8" => 1,
-                "i16" | "u16" => 2,
-                "i32" | "u32" => 4,
-                "i64" | "u64" => 8,
-                _ => {
-                    self.memory_status = "Invalid integer type. Use i8, u8, i16, u16, etc.".to_string();
-                    return Err(anyhow!("Invalid integer type"));
-                }
-            };
-            
-            let value = if value_str.starts_with("0x") {
-                // Parse hex
-                match u64::from_str_radix(&value_str[2..], 16) {
-                    Ok(v) => v,
-                    Err(_) => {
-                        self.memory_status = "Invalid hex integer value".to_string();
-                        return Err(anyhow!("Invalid hex integer value"));
-                    }
-                }
-            } else {
-                // Parse decimal
-                match value_str.parse::<u64>() {
-                    Ok(v) => v,
-                    Err(_) => {
-                        self.memory_status = "Invalid integer value".to_string();
-                        return Err(anyhow!("Invalid integer value"));
-                    }
-                }
-            };
-            
-            SearchPattern::Integer(value, width)
-        } else if input.starts_with('f') && input.contains(':') {
-            // Float search
-            let parts: Vec<&str> = input.split(':').collect();
-            if parts.len() != 2 {
-                self.memory_status = "Invalid float format. Use f32:123.45, f64:123.45, etc.".to_string();
-                return Err(anyhow!("Invalid float format"));
-            }
-            
-            let type_str = parts[0];
-            let value_str = parts[1];
-            
-            let width = match type_str {
-                "f32" => 4,
-                "f64" => 8,
-                _ => {
-                    self.memory_status = "Invalid float type. Use f32 or f64.".to_string();
-                    return Err(anyhow!("Invalid float type"));
-                }
-            };
-            
-            let value = match value_str.parse::<f64>() {
-                Ok(v) => v,
-                Err(_) => {
-                    self.memory_status = "Invalid float value".to_string();
-                    return Err(anyhow!("Invalid float value"));
-                }
-            };
-            
-            SearchPattern::Float(value, width)
-        } else {
-            // Default to case-insensitive text search
-            SearchPattern::TextIgnoreCase(input.to_string())
-        };
-        
-        // Perform the search
-        let results = {
-            if let Some((base_addr, data)) = &self.memory_data {
-                // Clone data to avoid borrowing issues
-                let data_clone = data.clone();
-                let base_addr_clone = *base_addr;
-                
-                // Get debugger and memory map
-                let debugger = self.debugger.lock().unwrap();
-                if let Some(mem_map) = debugger.get_memory_map() {
-                    Some(mem_map.search_memory(&data_clone, base_addr_clone, &pattern))
-                } else {
-                    None
-                }
-            } else {
-                None
-            }
-        };
-        
-        // Process search results
-        if let Some(search_results) = results {
-            if search_results.is_empty() {
-                self.memory_status = "No matches found".to_string();
-            } else {
-                self.memory_search_results = search_results;
-                self.memory_search_index = 0;
-                self.memory_status = format!("Found {} matches", self.memory_search_results.len());
-                
-                // Jump to first result
-                if let Some(result) = self.memory_search_results.first() {
-                    self.jump_to_memory_address(result.address);
-                }
-            }
-        } else {
-            self.memory_status = "Memory map not available or no memory data loaded".to_string();
-        }
-        
-        self.memory_search_mode = false;
-        self.memory_search_pattern = Some(pattern);
-        
+    /// Get DWARF source context for current location
+    pub fn update_source_context(&mut self, _context_lines: usize) -> Result<()> {
+        // For now, we'll just return an empty implementation
+        // This will be properly implemented once Task 7 is complete
+        debug!("Source context update requested, but DWARF integration is not yet complete");
+        self.current_source_context = None;
         Ok(())
-    }
-    
-    /// Execute memory edit with current buffer
-    pub fn execute_memory_edit(&mut self) -> Result<()> {
-        let input = self.memory_edit_buffer.trim();
-        if input.is_empty() {
-            self.memory_edit_mode = false;
-            self.memory_status = "Edit canceled - empty input".to_string();
-            return Ok(());
-        }
-        
-        let byte_value = match u8::from_str_radix(input, 16) {
-            Ok(v) => v,
-            Err(_) => {
-                self.memory_status = "Invalid hex value".to_string();
-                return Err(anyhow!("Invalid hex value"));
-            }
-        };
-        
-        // Get cursor position and update memory
-        let bytes_per_row = 16;
-        let offset = self.get_memory_cursor_offset(bytes_per_row);
-        
-        let result = {
-            if let Some((base_addr, data)) = &mut self.memory_data {
-                if offset < data.len() {
-                    // Update in-memory buffer
-                    data[offset] = byte_value;
-                    
-                    // Write to process memory
-                    let address = *base_addr + offset as u64;
-                    let mut debugger = self.debugger.lock().unwrap();
-                    
-                    match debugger.write_memory(address, &[byte_value]) {
-                        Ok(_) => {
-                            // Move cursor to next byte (after we release the lock)
-                            Some((address, data.len()))
-                        },
-                        Err(e) => {
-                            return Err(anyhow!("Failed to write memory: {}", e));
-                        }
-                    }
-                } else {
-                    self.memory_status = "Position out of range".to_string();
-                    None
-                }
-            } else {
-                self.memory_status = "No memory data loaded".to_string();
-                None
-            }
-        };
-        
-        // Update UI if the write was successful
-        if let Some((address, data_len)) = result {
-            // Now we can move the cursor
-            self.move_memory_cursor(CursorDirection::Right, data_len, bytes_per_row);
-            self.memory_status = format!("Wrote 0x{:02x} at 0x{:x}", byte_value, address);
-        }
-        
-        self.memory_edit_mode = false;
-        self.memory_edit_buffer.clear();
-        
-        Ok(())
-    }
-    
-    /// Execute memory jump with current input
-    pub fn execute_memory_jump(&mut self) -> Result<()> {
-        let input = self.memory_jump_input.trim();
-        if input.is_empty() {
-            self.memory_jump_mode = false;
-            self.memory_status = "Jump canceled - empty address".to_string();
-            return Ok(());
-        }
-        
-        // Parse the address
-        let address = match u64::from_str_radix(input, 16) {
-            Ok(addr) => addr,
-            Err(_) => {
-                self.memory_status = "Invalid hex address".to_string();
-                return Err(anyhow!("Invalid hex address"));
-            }
-        };
-        
-        // Check if address is within current view
-        if let Some((base_addr, data)) = &self.memory_data {
-            let data_end = *base_addr + data.len() as u64;
-            if address >= *base_addr && address < data_end {
-                // Address is in current range, just move cursor
-                let offset = (address - *base_addr) as usize;
-                let bytes_per_row = 16;
-                let row = offset / bytes_per_row;
-                let col = offset % bytes_per_row;
-                
-                self.memory_cursor = (row, col);
-                
-                // Update scroll
-                let visible_rows = 20; // Approximate
-                if row < self.memory_scroll || row >= self.memory_scroll + visible_rows {
-                    self.memory_scroll = row.saturating_sub(5); // Position with some context
-                }
-                
-                self.memory_status = format!("Jumped to address 0x{:x}", address);
-            } else {
-                // Need to request new memory region
-                let fetch_size = data.len(); // Use current view size
-                self.fetch_memory(address, fetch_size)?;
-            }
-        } else {
-            // No memory loaded yet, load default size
-            const DEFAULT_SIZE: usize = 1024;
-            self.fetch_memory(address, DEFAULT_SIZE)?;
-        }
-        
-        // Add to history
-        self.add_to_memory_history(address);
-        
-        self.memory_jump_mode = false;
-        self.memory_jump_input.clear();
-        
-        Ok(())
-    }
-
-    /// Handle keys specifically for the memory view
-    pub fn handle_memory_keys(&mut self, key: KeyEvent) -> Result<()> {
-        if self.memory_search_mode {
-            // Handle input mode for search
-            match key.code {
-                KeyCode::Char(c) => {
-                    self.memory_search_input.push(c);
-                },
-                KeyCode::Backspace => {
-                    self.memory_search_input.pop();
-                },
-                KeyCode::Esc => {
-                    self.cancel_memory_search();
-                },
-                KeyCode::Enter => {
-                    self.execute_memory_search()?;
-                },
-                _ => {}
-            }
-        } else if self.memory_edit_mode {
-            // Handle input mode for memory editing
-            match key.code {
-                KeyCode::Char(c) if c.is_ascii_hexdigit() => {
-                    if self.memory_edit_buffer.len() < 2 {
-                        self.memory_edit_buffer.push(c);
-                    }
-                },
-                KeyCode::Backspace => {
-                    self.memory_edit_buffer.pop();
-                },
-                KeyCode::Esc => {
-                    self.cancel_memory_edit();
-                },
-                KeyCode::Enter => {
-                    self.execute_memory_edit()?;
-                },
-                _ => {}
-            }
-        } else if self.memory_jump_mode {
-            // Handle input mode for address jump
-            match key.code {
-                KeyCode::Char(c) if c.is_ascii_hexdigit() => {
-                    self.memory_jump_input.push(c);
-                },
-                KeyCode::Backspace => {
-                    self.memory_jump_input.pop();
-                },
-                KeyCode::Esc => {
-                    self.cancel_memory_jump();
-                },
-                KeyCode::Enter => {
-                    self.execute_memory_jump()?;
-                },
-                _ => {}
-            }
-        } else {
-            // Normal mode handling
-            match key.code {
-                // Cursor movement
-                KeyCode::Up | KeyCode::Char('k') => {
-                    if let Some((_, data)) = &self.memory_data {
-                        self.move_memory_cursor(CursorDirection::Up, data.len(), 16);
-                    }
-                },
-                KeyCode::Down | KeyCode::Char('j') => {
-                    if let Some((_, data)) = &self.memory_data {
-                        self.move_memory_cursor(CursorDirection::Down, data.len(), 16);
-                    }
-                },
-                KeyCode::Left | KeyCode::Char('h') => {
-                    if let Some((_, data)) = &self.memory_data {
-                        self.move_memory_cursor(CursorDirection::Left, data.len(), 16);
-                    }
-                },
-                KeyCode::Right | KeyCode::Char('l') => {
-                    if let Some((_, data)) = &self.memory_data {
-                        self.move_memory_cursor(CursorDirection::Right, data.len(), 16);
-                    }
-                },
-                
-                // Page up/down
-                KeyCode::PageUp => {
-                    self.memory_scroll = self.memory_scroll.saturating_sub(20);
-                },
-                KeyCode::PageDown => {
-                    if let Some((_, data)) = &self.memory_data {
-                        let total_rows = (data.len() + 16 - 1) / 16;
-                        self.memory_scroll = (self.memory_scroll + 20).min(total_rows.saturating_sub(1));
-                    }
-                },
-                KeyCode::Home => {
-                    self.memory_scroll = 0;
-                    self.memory_cursor = (0, 0);
-                },
-                KeyCode::End => {
-                    if let Some((_, data)) = &self.memory_data {
-                        let total_rows = (data.len() + 16 - 1) / 16;
-                        self.memory_scroll = total_rows.saturating_sub(1);
-                        self.memory_cursor = (total_rows.saturating_sub(1), 0);
-                    }
-                },
-                
-                // Edit memory
-                KeyCode::Char('e') => {
-                    self.start_memory_edit();
-                },
-                
-                // Format switching
-                KeyCode::Tab => {
-                    let formats = MemoryFormat::all();
-                    let current_format = self.get_memory_format();
-                    let current_idx = formats.iter().position(|&f| f == current_format).unwrap_or(0);
-                    let next_idx = (current_idx + 1) % formats.len();
-                    self.set_memory_format(formats[next_idx]);
-                    self.memory_status = format!("Format changed to: {}", formats[next_idx].as_str());
-                },
-                
-                // Search
-                KeyCode::Char('/') => {
-                    self.start_memory_search();
-                },
-                
-                // Jump to address
-                KeyCode::Char('g') => {
-                    self.start_memory_jump();
-                },
-                
-                // Search result navigation
-                KeyCode::Char('n') => {
-                    self.next_search_result();
-                },
-                KeyCode::Char('N') => {
-                    self.prev_search_result();
-                },
-                
-                // History navigation
-                KeyCode::Char('b') => {
-                    if let Some(addr) = self.memory_history_back() {
-                        self.jump_to_memory_address(addr);
-                    }
-                },
-                KeyCode::Char('f') => {
-                    if let Some(addr) = self.memory_history_forward() {
-                        self.jump_to_memory_address(addr);
-                    }
-                },
-                
-                // Selection
-                KeyCode::Char(' ') => {
-                    if self.memory_selection.is_some() {
-                        // End selection and create/copy
-                        if let Some((start, end)) = self.end_memory_selection(16) {
-                            if let Some((base_addr, data)) = &self.memory_data {
-                                let end_adj = end.min(data.len());
-                                if start < end_adj {
-                                    let selection = &data[start..end_adj];
-                                    // Could potentially export to clipboard or create watchpoint here
-                                    self.memory_status = format!(
-                                        "Selected {} bytes from 0x{:x} to 0x{:x}", 
-                                        selection.len(),
-                                        base_addr + start as u64,
-                                        base_addr + end_adj as u64
-                                    );
-                                }
-                            }
-                        }
-                    } else {
-                        // Start selection
-                        self.start_memory_selection();
-                        self.memory_status = "Selection started. Use cursor keys and press space to complete.".to_string();
-                    }
-                },
-                
-                // Set watchpoint at cursor
-                KeyCode::Char('w') => {
-                    if let Some((base_addr, _)) = &self.memory_data {
-                        let cursor_addr = self.get_memory_cursor_address(*base_addr, 16);
-                        let mut debugger = self.debugger.lock().unwrap();
-                        
-                        // Default to a 1-byte write watchpoint
-                        match debugger.set_watchpoint(cursor_addr, 1, crate::platform::WatchpointType::Write) {
-                            Ok(_) => {
-                                self.memory_status = format!("Set write watchpoint at 0x{:x}", cursor_addr);
-                            },
-                            Err(e) => {
-                                self.memory_status = format!("Failed to set watchpoint: {}", e);
-                            }
-                        }
-                    }
-                },
-                
-                // Toggle read watchpoint at cursor
-                KeyCode::Char('r') => {
-                    if let Some((base_addr, _)) = &self.memory_data {
-                        let cursor_addr = self.get_memory_cursor_address(*base_addr, 16);
-                        let mut debugger = self.debugger.lock().unwrap();
-                        
-                        // Default to a 1-byte read watchpoint
-                        match debugger.set_watchpoint(cursor_addr, 1, crate::platform::WatchpointType::Read) {
-                            Ok(_) => {
-                                self.memory_status = format!("Set read watchpoint at 0x{:x}", cursor_addr);
-                            },
-                            Err(e) => {
-                                self.memory_status = format!("Failed to set watchpoint: {}", e);
-                            }
-                        }
-                    }
-                },
-                
-                // Toggle access (read/write) watchpoint at cursor
-                KeyCode::Char('a') => {
-                    if let Some((base_addr, _)) = &self.memory_data {
-                        let cursor_addr = self.get_memory_cursor_address(*base_addr, 16);
-                        let mut debugger = self.debugger.lock().unwrap();
-                        
-                        // Default to a 1-byte read/write watchpoint
-                        match debugger.set_watchpoint(cursor_addr, 1, crate::platform::WatchpointType::ReadWrite) {
-                            Ok(_) => {
-                                self.memory_status = format!("Set read/write watchpoint at 0x{:x}", cursor_addr);
-                            },
-                            Err(e) => {
-                                self.memory_status = format!("Failed to set watchpoint: {}", e);
-                            }
-                        }
-                    }
-                },
-                
-                // Remove watchpoint at cursor
-                KeyCode::Char('d') => {
-                    if let Some((base_addr, _)) = &self.memory_data {
-                        let cursor_addr = self.get_memory_cursor_address(*base_addr, 16);
-                        let mut debugger = self.debugger.lock().unwrap();
-                        
-                        match debugger.remove_watchpoint(cursor_addr) {
-                            Ok(_) => {
-                                self.memory_status = format!("Removed watchpoint at 0x{:x}", cursor_addr);
-                            },
-                            Err(e) => {
-                                self.memory_status = format!("Failed to remove watchpoint: {}", e);
-                            }
-                        }
-                    }
-                },
-                
-                // Refresh memory view
-                KeyCode::Char('R') => {
-                    if let Some((base_addr, data_len)) = self.memory_data.as_ref().map(|(addr, data)| (*addr, data.len())) {
-                        self.fetch_memory(base_addr, data_len)?;
-                        self.memory_status = "Memory refreshed".to_string();
-                    }
-                },
-                
-                // Go to next memory region
-                KeyCode::Char(']') => {
-                    let mut next_region_addr = None;
-                    let current_addr = self.memory_data.as_ref().map(|(addr, _)| *addr);
-                    
-                    if let Some(addr) = current_addr {
-                        if let Ok(debugger) = self.debugger.lock() {
-                            if let Some(memory_map) = debugger.get_memory_map() {
-                                next_region_addr = memory_map.find_next_region(addr).map(|region| region.base);
-                            }
-                        }
-                    }
-                    
-                    // Now handle the result outside of any debugger borrows
-                    if let Some(addr) = next_region_addr {
-                        self.fetch_memory(addr, 1024)?;
-                        self.memory_status = format!("Navigated to next region at 0x{:x}", addr);
-                    } else {
-                        self.memory_status = "No next memory region found".to_string();
-                    }
-                },
-                
-                // Go to previous memory region
-                KeyCode::Char('[') => {
-                    let mut prev_region_addr = None;
-                    let current_addr = self.memory_data.as_ref().map(|(addr, _)| *addr);
-                    
-                    if let Some(addr) = current_addr {
-                        if let Ok(debugger) = self.debugger.lock() {
-                            if let Some(memory_map) = debugger.get_memory_map() {
-                                prev_region_addr = memory_map.find_prev_region(addr).map(|region| region.base);
-                            }
-                        }
-                    }
-                    
-                    // Now handle the result outside of any debugger borrows
-                    if let Some(addr) = prev_region_addr {
-                        self.fetch_memory(addr, 1024)?;
-                        self.memory_status = format!("Navigated to previous region at 0x{:x}", addr);
-                    } else {
-                        self.memory_status = "No previous memory region found".to_string();
-                    }
-                },
-                
-                // Display help for memory view
-                KeyCode::F(1) => {
-                    self.memory_status = "Memory View Commands: e=edit | /=search | g=jump | n=next result | w=watch | r/a=read/access watch | d=delete watch | []=prev/next region".to_string();
-                },
-                
-                _ => {}
-            }
-        }
-        
-        Ok(())
-    }
-
-    /// Fetch memory from debugger
-    pub fn fetch_memory(&mut self, address: u64, size: usize) -> Result<()> {
-        use log::debug;
-        
-        // Log the operation
-        debug!("Reading memory at 0x{:x} with size {}", address, size);
-        
-        // First get the debugger in a separate scope
-        let data = {
-            let mut debugger = self.debugger.lock().unwrap();
-            debugger.read_memory(address, size)
-        };
-        
-        // Process the result after releasing the lock
-        match data {
-            Ok(memory_data) => {
-                self.memory_data = Some((address, memory_data));
-                self.memory_status = format!("Loaded {} bytes from 0x{:x}", size, address);
-                
-                // Add to navigation history
-                self.add_to_memory_history(address);
-                
-                Ok(())
-            },
-            Err(e) => {
-                self.memory_status = format!("Failed to read memory: {}", e);
-                Err(anyhow!("Failed to read memory: {}", e))
-            }
-        }
-    }
-
-    /// Handle key event
-    pub fn handle_key_event(&mut self, key: KeyEvent) -> Result<bool> {
-        // Check for mode-specific handling first
-        if self.ui_mode == UiMode::HelpOverlay {
-            // Any key closes help overlay
-            self.ui_mode = UiMode::Normal;
-            return Ok(true);
-        }
-        
-        // Handle global key handlers first
-        match key.code {
-            KeyCode::Esc => {
-                if self.ui_mode != UiMode::Normal {
-                    self.ui_mode = UiMode::Normal;
-                    return Ok(true);
-                }
-                
-                // Cancel any active memory mode (search, edit, jump)
-                if self.memory_search_mode {
-                    self.memory_search_mode = false;
-                    self.memory_search_input.clear();
-                    self.memory_status = "Search canceled".to_string();
-                    return Ok(true);
-                } else if self.memory_edit_mode {
-                    self.memory_edit_mode = false;
-                    self.memory_edit_buffer.clear();
-                    self.memory_status = "Edit canceled".to_string();
-                    return Ok(true);
-                } else if self.memory_jump_mode {
-                    self.memory_jump_mode = false;
-                    self.memory_jump_input.clear();
-                    self.memory_status = "Jump canceled".to_string();
-                    return Ok(true);
-                }
-            },
-            _ => {}
-        }
-        
-        // Handle view-specific key handling
-        match self.current_view {
-            View::Memory => {
-                // If the memory view is focused, use our specialized memory key handler
-                self.handle_memory_keys(key)?;
-                return Ok(true);
-            },
-            _ => {
-                // For other views, handle with the existing code
-            }
-        }
-        
-        Ok(false) // Not handled
     }
 }
