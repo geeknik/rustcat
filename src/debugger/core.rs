@@ -7,7 +7,7 @@ use std::time::Duration;
 use anyhow::{anyhow, Result};
 use log::{info, warn, debug, error};
 
-use crate::debugger::breakpoint::{Breakpoint, BreakpointManager, ConditionEvaluator};
+use crate::debugger::breakpoint::{Breakpoint, BreakpointManager, ConditionEvaluator, BreakpointType};
 use crate::debugger::memory::MemoryMap;
 use crate::debugger::registers::{Registers, Register};
 use crate::debugger::symbols::SymbolTable;
@@ -18,6 +18,10 @@ use crate::debugger::variables::{VariableManager, Variable, VariableValue};
 use crate::platform::macos::MacosDebugger;
 use crate::platform::dwarf::DwarfParser;
 use crate::debugger::breakpoint::{Watchpoint, WatchpointManager};
+use crate::platform::WatchpointType;
+
+// Add this at the top of the file if not already present
+type ProcessId = u64;
 
 /// Debugger state
 #[derive(Debug, PartialEq, Eq, Clone, Copy)]
@@ -139,7 +143,7 @@ impl Debugger {
             let start = Instant::now();
             let mut symbol_table = symbols.lock().unwrap();
             
-            match symbol_table.load_from_file(&target_path) {
+            match symbol_table.load_file(std::path::Path::new(&target_path)) {
                 Ok(()) => {
                     let elapsed = start.elapsed();
                     info!("Symbols loaded successfully in {:.2?}", elapsed);
@@ -513,7 +517,7 @@ impl Debugger {
             // Record function call or return if appropriate
             if let Some(instruction) = current_instruction {
                 // Get the current thread ID
-                let thread_id = pid as u64; // For now, assume thread ID = process ID
+                let _thread_id = pid as u64; // For now, assume thread ID = process ID
                 
                 // If this was a call instruction, record the function call
                 if instruction.is_call {
@@ -529,7 +533,7 @@ impl Debugger {
                     });
                     
                     // Record the call
-                    if let Err(e) = self.record_function_call(call_site, target_addr, thread_id) {
+                    if let Err(e) = self.record_function_call(call_site, target_addr, _thread_id) {
                         debug!("Could not record function call: {}", e);
                     }
                 }
@@ -543,7 +547,7 @@ impl Debugger {
                     };
                     
                     // Record the return
-                    if let Err(e) = self.record_function_return(thread_id, return_value) {
+                    if let Err(e) = self.record_function_return(_thread_id, return_value) {
                         debug!("Could not record function return: {}", e);
                     }
                 }
@@ -562,67 +566,198 @@ impl Debugger {
         if let Some(pid) = self.pid {
             info!("Continuing execution");
             
-            // If we're at a breakpoint, handle it specially
-            if let Some(addr) = self.current_breakpoint.take() {
-                // Get the breakpoint info
-                let bp = self.find_breakpoint(addr).ok_or_else(|| anyhow!("Breakpoint not found"))?;
-                let saved_data = bp.saved_data();
+            // If we're stopped at a breakpoint, we need to execute the original instruction
+            // before continuing
+            if let Some(bp_address) = self.current_breakpoint {
+                // Get the current registers
+                let registers = self.platform.get_registers(pid)?;
+                let pc = registers.get(Register::Pc).unwrap_or(0);
                 
-                // Temporarily remove the breakpoint
-                self.platform.remove_breakpoint(pid, addr, saved_data)?;
+                // If we're still at the breakpoint, we need to single-step to execute the original
+                // instruction, then restore the breakpoint
+                if pc == bp_address {
+                    debug!("Stepped over breakpoint at 0x{:x}", bp_address);
+                    
+                    // First find the breakpoint
+                    if let Some((index, _)) = self.breakpoints.find_by_address(bp_address) {
+                        // Extract all data before any mutable borrows
+                        let (bp_type, original_byte) = {
+                            let bp = self.breakpoints.get(index).ok_or(anyhow!("Breakpoint not found"))?;
+                            (bp.breakpoint_type(), bp.saved_data())
+                        };
+                        
+                        // Temporarily remove the breakpoint
+                        self.platform.remove_breakpoint(pid, bp_address, original_byte)?;
+                        
+                        // Single-step to execute the instruction
+                        self.platform.step(pid)?;
+                        
+                        // Re-add the breakpoint (unless it's a one-shot breakpoint)
+                        if bp_type != BreakpointType::OneShot {
+                            self.platform.set_breakpoint(pid, bp_address)?;
+                        }
+                    }
+                }
+            }
+            
+            // Now continue execution
+            self.platform.continue_execution(pid)?;
+            self.state = DebuggerState::Running;
+            self.current_breakpoint = None;
+            self.current_watchpoint = None;
+            
+            // Now wait for a stop event
+            // We'll wait for SIGTRAP or SIGSTOP
+            if let Err(e) = self.platform.wait_for_stop(pid, 0) {
+                warn!("Error waiting for process to stop: {}", e);
+                return Ok(());
+            }
+            
+            // If we got here, we stopped for some reason
+            // Get current registers to see where we are
+            let registers = self.platform.get_registers(pid)?;
+            let pc = registers.get(Register::Pc).unwrap_or(0);
+            
+            // Check if we hit a breakpoint
+            if let Some((index, _)) = self.breakpoints.find_by_address(pc) {
+                self.current_breakpoint = Some(pc);
+                self.state = DebuggerState::Stopped;
                 
-                // Step over the breakpoint
-                self.platform.step(pid)?;
-                
-                // Wait for the step to complete
-                if let Err(e) = self.platform.wait_for_stop(pid, 1000) {
-                    warn!("Error waiting for process to stop after step: {}", e);
+                // Create a full struct to hold the essential data
+                struct BpData {
+                    bp_type: BreakpointType,
+                    condition: Option<String>,
+                    log_message: Option<String>,
+                    symbol_name: Option<String>,
+                    source_location: Option<(String, u32)>,
+                    should_break: bool
                 }
                 
-                // Check if the step caused a function call or return
-                if let Ok(registers) = self.get_registers() {
-                    let _current_pc = registers.get(Register::Pc).unwrap_or_default();
-                    // Disassemble the instruction we just executed
-                    if let Ok(instructions) = self.disassemble(addr, 1) {
-                        if let Some(instruction) = instructions.first() {
-                            let thread_id = pid as u64;
-                            
-                            // Check if it was a call instruction
-                            if instruction.is_call {
-                                let call_site = instruction.address;
-                                if let Some(target) = instruction.branch_target {
-                                    if let Err(e) = self.record_function_call(call_site, target, thread_id) {
-                                        debug!("Could not record function call: {}", e);
-                                    }
+                // First, extract all data we need from immutable reference and clone it
+                let bp_data = {
+                    let bp = self.breakpoints.get(index).ok_or(anyhow!("Breakpoint not found"))?;
+                    BpData {
+                        bp_type: bp.breakpoint_type(),
+                        condition: bp.condition().map(|s| s.to_string()),
+                        log_message: bp.log_message().map(|s| s.to_string()),
+                        symbol_name: bp.symbol_name().map(|s| s.to_string()),
+                        source_location: bp.source_location().map(|(file, line)| (file.to_string(), line)),
+                        should_break: false // Will set this later
+                    }
+                };
+                
+                // Now update the breakpoint with mutable reference in a separate scope
+                let mut updated_bp_data = bp_data;
+                {
+                    let bp = self.breakpoints.get_mut(index).ok_or(anyhow!("Breakpoint not found"))?;
+                    updated_bp_data.should_break = bp.hit();
+                    
+                    // For one-shot breakpoints, disable it
+                    if bp.breakpoint_type() == BreakpointType::OneShot {
+                        bp.disable();
+                    }
+                }
+                
+                // Now we can use the data without any borrows on self.breakpoints
+                
+                // Handle breakpoint type logic
+                if updated_bp_data.bp_type == BreakpointType::Conditional {
+                    let should_continue = match updated_bp_data.condition {
+                        Some(ref condition_str) => {
+                            match self.evaluate_condition(condition_str) {
+                                Ok(true) => {
+                                    // Condition is true, break
+                                    info!("Conditional breakpoint hit at 0x{:x}, condition true", pc);
+                                    false
+                                },
+                                Ok(false) => {
+                                    // Condition is false, continue execution
+                                    info!("Conditional breakpoint hit at 0x{:x}, condition false - continuing", pc);
+                                    true
+                                },
+                                Err(e) => {
+                                    // Error evaluating condition, break anyway
+                                    warn!("Error evaluating breakpoint condition: {}", e);
+                                    false
                                 }
                             }
-                            // Check if it was a return instruction
-                            else if instruction.is_return {
-                                let return_value = registers.get(Register::X0);
-                                if let Err(e) = self.record_function_return(thread_id, return_value) {
-                                    debug!("Could not record function return: {}", e);
+                        },
+                        None => false
+                    };
+                    
+                    if should_continue {
+                        self.continue_execution()?;
+                        return Ok(());
+                    }
+                }
+                
+                // For logging breakpoints, print message and continue
+                if updated_bp_data.bp_type == BreakpointType::Logging {
+                    match updated_bp_data.log_message {
+                        Some(message) => {
+                            info!("Logging breakpoint: {}", message);
+                        },
+                        None => {
+                            info!("Logging breakpoint hit at 0x{:x}", pc);
+                        }
+                    }
+                    
+                    // Continue execution
+                    self.continue_execution()?;
+                    return Ok(());
+                }
+                
+                // Check if we should break based on the hit counter
+                if !updated_bp_data.should_break {
+                    // Hit count hasn't reached the required value, continue
+                    debug!("Breakpoint hit at 0x{:x}, but ignore count not reached - continuing", pc);
+                    self.continue_execution()?;
+                    return Ok(());
+                }
+                
+                // Check if we have a condition
+                if let Some(condition) = updated_bp_data.condition {
+                    if !condition.is_empty() {
+                        // Evaluate condition
+                        match self.evaluate_expression(&condition) {
+                            Ok(result) => {
+                                // Check if result is "false" or a zero value
+                                let is_false = match result {
+                                    VariableValue::Boolean(b) => !b,
+                                    VariableValue::Integer(i) => i == 0,
+                                    VariableValue::Float(f) => f == 0.0,
+                                    _ => false, // Other types treated as true
+                                };
+                                
+                                if is_false {
+                                    // Condition is false, continue execution
+                                    info!("Breakpoint condition evaluated to false, continuing...");
+                                    self.continue_execution()?;
+                                    return Ok(());
                                 }
+                            },
+                            Err(e) => {
+                                warn!("Failed to evaluate breakpoint condition: {}", e);
                             }
                         }
                     }
                 }
                 
-                // Restore the breakpoint
-                self.platform.set_breakpoint(pid, addr)?;
+                // Log the breakpoint hit
+                let location = match (updated_bp_data.symbol_name, updated_bp_data.source_location) {
+                    (Some(sym), Some((file, line))) => format!("{}:{} in {}", file, line, sym),
+                    (Some(sym), None) => format!("{}", sym),
+                    (None, Some((file, line))) => format!("{}:{}", file, line),
+                    (None, None) => format!("0x{:x}", pc),
+                };
                 
-                // Continue execution
-                self.platform.continue_execution(pid)?;
-            } else {
-                // No breakpoint, just continue
-                self.platform.continue_execution(pid)?;
+                info!("Hit breakpoint at {}", location);
             }
             
-            self.state = DebuggerState::Running;
+            Ok(())
         } else {
-            return Err(anyhow!("Cannot continue: program not loaded"));
+            Err(anyhow!("Cannot continue: program not loaded"))
         }
-        
-        Ok(())
     }
     
     /// Get the current state of the debugger
@@ -1084,124 +1219,443 @@ impl Debugger {
         self.variable_manager.add_variable(variable);
     }
 
-    /// Set a watchpoint at the specified address
-    pub fn set_watchpoint(&mut self, address: u64, size: usize, watchpoint_type: crate::platform::WatchpointType) -> Result<()> {
-        info!("Setting watchpoint at address 0x{:x} (size: {})", address, size);
-        
-        // First check if we have a process to debug
-        let pid = match self.pid {
-            Some(pid) => pid,
-            None => return Err(anyhow!("No process to debug")),
-        };
-        
-        // Get current thread ID (use first thread if none is current)
-        let thread_id = if let Some(tid) = self.thread_manager.current_thread_id() { tid } else {
-            let threads = self.thread_manager.get_all_threads();
+    /// Set a hardware breakpoint at the specified address
+    pub fn set_hardware_breakpoint(&mut self, address: u64) -> Result<()> {
+        // Set a hardware breakpoint at the specified address
+        if let Some(pid) = self.pid {
+            info!("Setting hardware breakpoint at 0x{:x}", address);
+            
+            // Get the current thread
+            let threads = self.thread_manager.get_threads();
             if threads.is_empty() {
-                return Err(anyhow!("No threads available to set watchpoint"));
+                return Err(anyhow!("No threads available"));
             }
-            *threads.iter().next().unwrap().0
-        };
-        
-        // Create a watchpoint object
-        let mut watchpoint = Watchpoint::new(address, size, watchpoint_type);
-        
-        // Set source location info if available
-        if let Ok(Some((file, line))) = self.get_line_info(address) {
-            watchpoint.set_source_location(Some((file, line)));
+            
+            let thread_id = threads[0].tid();
+            
+            // Get the hardware breakpoint register index
+            match self.platform.set_hardware_breakpoint(pid, thread_id, address) {
+                Ok(register_index) => {
+                    // Create ID for tracking this hardware breakpoint
+                    let id = format!("hw{}", register_index);
+                    
+                    // Add to our breakpoint manager with the hardware flag
+                    let mut breakpoint = Breakpoint::new_with_type(address, 0, BreakpointType::Hardware);
+                    breakpoint.set_id(Some(id));
+                    
+                    // Add the breakpoint to our tracking
+                    self.breakpoints.add_breakpoint(breakpoint);
+                    
+                    info!("Hardware breakpoint set at 0x{:x} (register #{})", address, register_index);
+                    Ok(())
+                },
+                Err(e) => Err(anyhow!("Failed to set hardware breakpoint: {}", e)),
+            }
+        } else {
+            Err(anyhow!("No active process"))
         }
-        
-        // Set symbol name if available
-        let symbol_name = {
-            let symbols = self.symbols.lock().unwrap();
-            symbols.find_by_address(address).map(|symbol| symbol.name().to_string())
-        };
-        
-        if let Some(name) = symbol_name {
-            watchpoint.set_symbol_name(Some(name));
-        }
-        
-        // Set hardware watchpoint using platform-specific method
-        let register_index = self.platform.set_watchpoint(pid, thread_id, address, size, watchpoint_type)?;
-        
-        // Store the hardware register used
-        watchpoint.set_register_index(Some(register_index));
-        
-        // Add to our watchpoint manager
-        let _index = self.watchpoints.add_watchpoint(watchpoint);
-        
-        info!("Watchpoint set at 0x{:x}, size: {}, type: {}, register: {}", 
-              address, size, watchpoint_type.as_str(), register_index);
-        
-        Ok(())
     }
     
-    /// Remove a watchpoint at the specified address
+    /// Remove a hardware breakpoint at the specified address
+    pub fn remove_hardware_breakpoint(&mut self, address: u64) -> Result<()> {
+        // Remove a hardware breakpoint at the specified address
+        if let Some(pid) = self.pid {
+            // Find the hardware breakpoint by address
+            let mut index_to_remove = None;
+            let mut register_index = None;
+            
+            // Find the breakpoint in our tracking
+            let bp_index = self.breakpoints.find_index(address);
+            
+            if let Some(idx) = bp_index {
+                if let Some(bp) = self.breakpoints.get(idx) {
+                    if bp.breakpoint_type() == BreakpointType::Hardware {
+                        index_to_remove = Some(idx);
+                        
+                        // Extract register index from ID (format is "hw<index>")
+                        if let Some(id) = bp.id() {
+                            if id.starts_with("hw") {
+                                if let Ok(reg_idx) = id[2..].parse::<usize>() {
+                                    register_index = Some(reg_idx);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            
+            if let (Some(idx), Some(reg_idx)) = (index_to_remove, register_index) {
+                // Get the current thread
+                let threads = self.thread_manager.get_threads();
+                if threads.is_empty() {
+                    return Err(anyhow!("No threads available"));
+                }
+                
+                let thread_id = threads[0].tid();
+                
+                // Remove the hardware breakpoint
+                if let Err(e) = self.platform.remove_hardware_breakpoint(pid, thread_id, reg_idx) {
+                    return Err(anyhow!("Failed to remove hardware breakpoint: {}", e));
+                }
+                
+                // Remove from our tracking
+                self.breakpoints.remove_breakpoint(idx);
+                
+                info!("Hardware breakpoint removed from 0x{:x}", address);
+                Ok(())
+            } else {
+                Err(anyhow!("No hardware breakpoint found at address 0x{:x}", address))
+            }
+        } else {
+            Err(anyhow!("No active process"))
+        }
+    }
+    
+    /// Set a hardware watchpoint at the specified address
+    pub fn set_watchpoint(&mut self, address: u64, size: usize, watchpoint_type: WatchpointType) -> Result<()> {
+        // Set a hardware watchpoint
+        if let Some(pid) = self.pid {
+            info!("Setting hardware watchpoint at 0x{:x}", address);
+            
+            // Get the current thread
+            let threads = self.thread_manager.get_threads();
+            if threads.is_empty() {
+                return Err(anyhow!("No threads available"));
+            }
+            
+            let thread_id = threads[0].tid();
+            
+            // Get the hardware watchpoint register index
+            match self.platform.set_watchpoint(pid, thread_id, address, size, watchpoint_type) {
+                Ok(register_index) => {
+                    // Create ID for tracking this hardware watchpoint
+                    let id = format!("wp{}", register_index);
+                    
+                    // Add to our watchpoint manager
+                    let mut wp = Watchpoint::new(address, size, watchpoint_type);
+                    wp.set_id(Some(id));
+                    wp.set_register_index(Some(register_index));
+                    
+                    // Add the watchpoint to our tracking
+                    self.watchpoints.add_watchpoint(wp);
+                    
+                    info!("Hardware watchpoint set at 0x{:x} (register #{})", address, register_index);
+                    Ok(())
+                },
+                Err(e) => Err(anyhow!("Failed to set hardware watchpoint: {}", e)),
+            }
+        } else {
+            Err(anyhow!("No active process"))
+        }
+    }
+    
+    /// Remove a hardware watchpoint at the specified address
     pub fn remove_watchpoint(&mut self, address: u64) -> Result<()> {
-        info!("Removing watchpoint at address 0x{:x}", address);
+        // Remove a hardware watchpoint at the specified address
+        if let Some(pid) = self.pid {
+            // Find the hardware watchpoint by address
+            let mut index_to_remove = None;
+            let mut register_index = None;
+            
+            // Find the watchpoint in our tracking
+            if let Some((idx, wp)) = self.watchpoints.find_by_address(address) {
+                index_to_remove = Some(idx);
+                register_index = wp.register_index();
+            }
+            
+            if let (Some(idx), Some(reg_idx)) = (index_to_remove, register_index) {
+                // Get the current thread
+                let threads = self.thread_manager.get_threads();
+                if threads.is_empty() {
+                    return Err(anyhow!("No threads available"));
+                }
+                
+                let thread_id = threads[0].tid();
+                
+                // Remove the hardware watchpoint
+                if let Err(e) = self.platform.remove_hardware_watchpoint(pid, thread_id, reg_idx) {
+                    return Err(anyhow!("Failed to remove hardware watchpoint: {}", e));
+                }
+                
+                // Remove from our tracking
+                self.watchpoints.remove_watchpoint(idx);
+                
+                info!("Hardware watchpoint removed from 0x{:x}", address);
+                Ok(())
+            } else {
+                Err(anyhow!("No hardware watchpoint found at address 0x{:x}", address))
+            }
+        } else {
+            Err(anyhow!("No active process"))
+        }
+    }
+
+    /// Check if the current stop is due to a hardware breakpoint
+    fn check_hardware_breakpoints(&mut self) -> Result<Option<u64>> {
+        if let Some(pid) = self.pid {
+            let threads = self.thread_manager.get_threads();
+            if threads.is_empty() {
+                return Ok(None);
+            }
+            
+            // Check all threads for hardware breakpoint hits
+            for thread in threads {
+                if let Ok(Some((register_index, address))) = self.platform.is_hardware_breakpoint_hit(pid, thread.thread_id()) {
+                    info!("Hardware breakpoint hit at 0x{:x} (register #{})", address, register_index);
+                    
+                    // Find the corresponding breakpoint in our tracking
+                    let bp_id = format!("hw{}", register_index);
+                    
+                    if let Some((index, _)) = self.breakpoints.find_by_id(&bp_id) {
+                        // Create a data struct to hold the essential data
+                        struct BpData {
+                            bp_type: BreakpointType,
+                            condition: Option<String>,
+                            log_message: Option<String>,
+                            symbol_name: Option<String>,
+                            source_location: Option<(String, u32)>,
+                            should_break: bool
+                        }
+                        
+                        // Extract all data we need from immutable reference
+                        let bp_data = {
+                            let bp = self.breakpoints.get(index).ok_or(anyhow!("Breakpoint not found"))?;
+                            
+                            let bp_type = bp.breakpoint_type();
+                            let condition = bp.condition().map(|s| s.to_string());
+                            let log_message = bp.log_message().map(|s| s.to_string());
+                            let symbol_name = bp.symbol_name().map(|s| s.to_string());
+                            let source_location = bp.source_location()
+                                .map(|(file, line)| (file.to_string(), line));
+                            
+                            // Mark hit in breakpoint with mutable reference (separate scope)
+                            let should_break = {
+                                let bp = self.breakpoints.get_mut(index).ok_or(anyhow!("Breakpoint not found"))?;
+                                bp.hit()
+                            };
+                            
+                            BpData {
+                                bp_type,
+                                condition,
+                                log_message,
+                                symbol_name,
+                                source_location,
+                                should_break
+                            }
+                        };
+                        
+                        // Now use the copied data for processing
+                        
+                        // Update current breakpoint and state
+                        self.current_breakpoint = Some(address);
+                        self.state = DebuggerState::Stopped;
+                        
+                        // For logging breakpoints, print message and continue
+                        if bp_data.bp_type == BreakpointType::Logging {
+                            match &bp_data.log_message {
+                                Some(message) => {
+                                    info!("Logging breakpoint: {}", message);
+                                },
+                                None => {
+                                    info!("Logging breakpoint hit at 0x{:x}", address);
+                                }
+                            }
+                            
+                            // Continue execution
+                            self.continue_execution()?;
+                            return Ok(None);
+                        }
+                        
+                        // Check if we should break based on the hit counter
+                        if !bp_data.should_break {
+                            // Hit count hasn't reached the threshold yet
+                            info!("Breakpoint hit count threshold not reached, continuing...");
+                            self.continue_execution()?;
+                            return Ok(None);
+                        }
+                        
+                        // Check if we have a condition
+                        if let Some(condition) = bp_data.condition {
+                            if !condition.is_empty() {
+                                // Evaluate condition
+                                match self.evaluate_expression(&condition) {
+                                    Ok(result) => {
+                                        // Check if result is "false" or a zero value
+                                        let is_false = match result {
+                                            VariableValue::Boolean(b) => !b,
+                                            VariableValue::Integer(i) => i == 0,
+                                            VariableValue::Float(f) => f == 0.0,
+                                            _ => false, // Other types treated as true
+                                        };
+                                        
+                                        if is_false {
+                                            // Condition is false, continue execution
+                                            info!("Breakpoint condition evaluated to false, continuing...");
+                                            self.continue_execution()?;
+                                            return Ok(None);
+                                        }
+                                    },
+                                    Err(e) => {
+                                        warn!("Failed to evaluate breakpoint condition: {}", e);
+                                    }
+                                }
+                            }
+                        }
+                        
+                        // If we got here, we should stop at this breakpoint
+                        info!("Stopped at hardware breakpoint at 0x{:x}", address);
+                        
+                        // Include symbol and source information if available
+                        if let Some(symbol) = bp_data.symbol_name {
+                            info!("Function: {}", symbol);
+                        }
+                        
+                        if let Some((file, line)) = bp_data.source_location {
+                            info!("Source: {}:{}", file, line);
+                        }
+                        
+                        return Ok(Some(address));
+                    }
+                }
+            }
+        }
         
-        // Find the watchpoint with this address
-        let (index, watchpoint) = match self.watchpoints.find_by_address(address) {
-            Some((idx, wp)) => (idx, wp),
-            None => return Err(anyhow!("No watchpoint found at address 0x{:x}", address)),
-        };
-        
-        // Get register index
-        let register_index = match watchpoint.register_index() {
-            Some(idx) => idx,
-            None => return Err(anyhow!("Watchpoint has no hardware register assigned")),
-        };
-        
-        // Get process ID
-        let pid = match self.pid {
-            Some(pid) => pid,
-            None => return Err(anyhow!("No process to debug")),
-        };
-        
-        // Remove hardware watchpoint
-        self.platform.remove_watchpoint(pid, register_index)?;
-        
-        // Remove from our manager
-        self.watchpoints.remove_watchpoint(index);
-        
-        info!("Watchpoint removed from address 0x{:x}", address);
-        
-        Ok(())
+        Ok(None)
     }
     
-    /// Remove a watchpoint by ID
-    pub fn remove_watchpoint_by_id(&mut self, id: &str) -> Result<()> {
-        info!("Removing watchpoint with ID: {}", id);
+    /// Check if the current stop is due to a watchpoint
+    fn check_watchpoints(&mut self) -> Result<Option<u64>> {
+        if let Some(pid) = self.pid {
+            let threads = self.thread_manager.get_threads();
+            if threads.is_empty() {
+                return Ok(None);
+            }
+            
+            // Check all threads for watchpoint hits
+            for thread in threads {
+                if let Ok(Some((register_index, address))) = self.platform.is_hardware_watchpoint_hit(pid, thread.thread_id()) {
+                    info!("Hardware watchpoint hit at 0x{:x} (register #{})", address, register_index);
+                    
+                    // Find the corresponding watchpoint in our tracking
+                    let wp_id = format!("wp{}", register_index);
+                    
+                    if let Some((index, _)) = self.watchpoints.find_by_id(&wp_id) {
+                        // Create a data struct to hold the essential data
+                        struct WpData {
+                            wp_type: WatchpointType,
+                            condition: Option<String>,
+                            log_message: Option<String>,
+                            symbol_name: Option<String>,
+                            source_location: Option<(String, u32)>,
+                            should_break: bool
+                        }
+                        
+                        // Extract all data we need from immutable reference
+                        let wp_data = {
+                            let wp = self.watchpoints.get(index).ok_or(anyhow!("Watchpoint not found"))?;
+                            
+                            let wp_type = wp.watchpoint_type();
+                            let condition = wp.condition().map(|s| s.to_string());
+                            let log_message = wp.log_message().map(|s| s.to_string());
+                            let symbol_name = wp.symbol_name().map(|s| s.to_string());
+                            let source_location = wp.source_location()
+                                .map(|(file, line)| (file.to_string(), line));
+                            
+                            // Mark hit in watchpoint with mutable reference (separate scope)
+                            let should_break = {
+                                let wp = self.watchpoints.get_mut(index).ok_or(anyhow!("Watchpoint not found"))?;
+                                wp.hit()
+                            };
+                            
+                            WpData {
+                                wp_type,
+                                condition,
+                                log_message,
+                                symbol_name,
+                                source_location,
+                                should_break
+                            }
+                        };
+                        
+                        // Now use the copied data for processing
+                        
+                        // Update current breakpoint (watchpoint) and state
+                        self.current_breakpoint = Some(address);
+                        self.state = DebuggerState::Stopped;
+                        
+                        // For logging watchpoints, print message and continue
+                        if wp_data.wp_type == WatchpointType::Logging {
+                            match &wp_data.log_message {
+                                Some(message) => {
+                                    info!("Logging watchpoint: {}", message);
+                                },
+                                None => {
+                                    info!("Logging watchpoint hit at 0x{:x}", address);
+                                }
+                            }
+                            
+                            // Continue execution
+                            self.continue_execution()?;
+                            return Ok(None);
+                        }
+                        
+                        // Check if we should break based on the hit counter
+                        if !wp_data.should_break {
+                            // Hit count hasn't reached the threshold yet
+                            info!("Watchpoint hit count threshold not reached, continuing...");
+                            self.continue_execution()?;
+                            return Ok(None);
+                        }
+                        
+                        // Check if we have a condition
+                        if let Some(condition) = wp_data.condition {
+                            if !condition.is_empty() {
+                                // Evaluate condition
+                                match self.evaluate_expression(&condition) {
+                                    Ok(result) => {
+                                        // Check if result is "false" or a zero value
+                                        let is_false = match result {
+                                            VariableValue::Boolean(b) => !b,
+                                            VariableValue::Integer(i) => i == 0,
+                                            VariableValue::Float(f) => f == 0.0,
+                                            _ => false, // Other types treated as true
+                                        };
+                                        
+                                        if is_false {
+                                            // Condition is false, continue execution
+                                            info!("Watchpoint condition evaluated to false, continuing...");
+                                            self.continue_execution()?;
+                                            return Ok(None);
+                                        }
+                                    },
+                                    Err(e) => {
+                                        warn!("Failed to evaluate watchpoint condition: {}", e);
+                                    }
+                                }
+                            }
+                        }
+                        
+                        // If we got here, we should stop at this watchpoint
+                        info!("Stopped at hardware watchpoint at 0x{:x}", address);
+                        
+                        // Include symbol and source information if available
+                        if let Some(symbol) = wp_data.symbol_name {
+                            info!("Function: {}", symbol);
+                        }
+                        
+                        if let Some((file, line)) = wp_data.source_location {
+                            info!("Source: {}:{}", file, line);
+                        }
+                        
+                        return Ok(Some(address));
+                    }
+                }
+            }
+        }
         
-        // Find the watchpoint with this ID
-        let (index, watchpoint) = match self.watchpoints.find_by_id(id) {
-            Some((idx, wp)) => (idx, wp),
-            None => return Err(anyhow!("No watchpoint found with ID: {}", id)),
-        };
-        
-        // Get register index
-        let register_index = match watchpoint.register_index() {
-            Some(idx) => idx,
-            None => return Err(anyhow!("Watchpoint has no hardware register assigned")),
-        };
-        
-        // Get process ID
-        let pid = match self.pid {
-            Some(pid) => pid,
-            None => return Err(anyhow!("No process to debug")),
-        };
-        
-        // Remove hardware watchpoint
-        self.platform.remove_watchpoint(pid, register_index)?;
-        
-        // Remove from our manager
-        self.watchpoints.remove_watchpoint(index);
-        
-        info!("Watchpoint removed with ID: {}", id);
-        
-        Ok(())
+        Ok(None)
     }
-    
+
     /// Get all watchpoints
     pub fn get_watchpoints(&self) -> &[Watchpoint] {
         self.watchpoints.get_all()
@@ -1228,3 +1682,5 @@ impl ConditionEvaluator for Debugger {
         Ok(true)
     }
 }
+
+

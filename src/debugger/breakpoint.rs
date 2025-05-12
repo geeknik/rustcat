@@ -390,6 +390,11 @@ impl BreakpointManager {
     pub fn count(&self) -> usize {
         self.breakpoints.len()
     }
+
+    /// Find the index of a breakpoint by its address
+    pub fn find_index(&self, address: u64) -> Option<usize> {
+        self.breakpoints.iter().position(|bp| bp.address() == address)
+    }
 }
 
 /// Represents a watchpoint in the target program

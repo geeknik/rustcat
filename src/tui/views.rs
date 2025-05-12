@@ -342,12 +342,18 @@ pub fn draw_memory_view<B: Backend>(
                         Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
                     crate::platform::WatchpointType::ReadWrite => 
                         Style::default().fg(Color::Magenta).add_modifier(Modifier::BOLD),
+                    crate::platform::WatchpointType::Conditional => 
+                        Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD),
+                    crate::platform::WatchpointType::Logging => 
+                        Style::default().fg(Color::Green).add_modifier(Modifier::BOLD),
                 };
                 
                 let wp_type_text = match wp.watchpoint_type() {
                     crate::platform::WatchpointType::Read => "READ",
                     crate::platform::WatchpointType::Write => "WRITE",
                     crate::platform::WatchpointType::ReadWrite => "READ/WRITE",
+                    crate::platform::WatchpointType::Conditional => "CONDITIONAL",
+                    crate::platform::WatchpointType::Logging => "LOGGING",
                 };
                 
                 rows.push(Line::from(vec![
@@ -405,6 +411,10 @@ pub fn draw_memory_view<B: Backend>(
                             Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
                         crate::platform::WatchpointType::ReadWrite => 
                             Style::default().fg(Color::Magenta).add_modifier(Modifier::BOLD),
+                        crate::platform::WatchpointType::Conditional => 
+                            Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD),
+                        crate::platform::WatchpointType::Logging => 
+                            Style::default().fg(Color::Green).add_modifier(Modifier::BOLD),
                     };
                     
                     hex_spans.push(Span::styled(byte_text.clone(), style));
@@ -443,6 +453,10 @@ pub fn draw_memory_view<B: Backend>(
                             Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
                         crate::platform::WatchpointType::ReadWrite => 
                             Style::default().fg(Color::Magenta).add_modifier(Modifier::BOLD),
+                        crate::platform::WatchpointType::Conditional => 
+                            Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD),
+                        crate::platform::WatchpointType::Logging => 
+                            Style::default().fg(Color::Green).add_modifier(Modifier::BOLD),
                     };
                     
                     ascii_spans.push(Span::styled(c.to_string(), style));

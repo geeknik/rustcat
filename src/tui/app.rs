@@ -567,13 +567,13 @@ impl App {
             Command::Break(location) => {
                 let result = if let Some(s) = location.strip_prefix("0x").or_else(|| location.strip_prefix("0X")) {
                     match u64::from_str_radix(s, 16) {
-                        Ok(addr) => debugger.set_breakpoint(addr),
+                        Ok(addr) => debugger.set_hardware_breakpoint(addr),
                         Err(_) => Err(anyhow!("Invalid hex address: {}", location)),
                     }
                 } else if location.chars().all(|c| c.is_ascii_digit()) {
                     // Decimal address
                     match location.parse::<u64>() {
-                        Ok(addr) => debugger.set_breakpoint(addr),
+                        Ok(addr) => debugger.set_hardware_breakpoint(addr),
                         Err(_) => Err(anyhow!("Invalid address: {}", location)),
                     }
                 } else {
@@ -682,7 +682,6 @@ impl App {
                 if let Some(address) = address {
                     // Re-acquire the lock to set the watchpoint
                     if let Ok(mut debugger) = self.debugger.lock() {
-                        // Default to watching 8 bytes (64-bit)
                         if let Err(e) = debugger.set_watchpoint(address, 8, WatchpointType::Read) {
                             error!("Failed to set read watchpoint: {}", e);
                         } else {
@@ -703,7 +702,6 @@ impl App {
                 if let Some(address) = address {
                     // Re-acquire the lock to set the watchpoint
                     if let Ok(mut debugger) = self.debugger.lock() {
-                        // Default to watching 8 bytes (64-bit)
                         if let Err(e) = debugger.set_watchpoint(address, 8, WatchpointType::Write) {
                             error!("Failed to set write watchpoint: {}", e);
                         } else {
@@ -724,7 +722,6 @@ impl App {
                 if let Some(address) = address {
                     // Re-acquire the lock to set the watchpoint
                     if let Ok(mut debugger) = self.debugger.lock() {
-                        // Default to watching 8 bytes (64-bit)
                         if let Err(e) = debugger.set_watchpoint(address, 8, WatchpointType::ReadWrite) {
                             error!("Failed to set read/write watchpoint: {}", e);
                         } else {
@@ -739,32 +736,20 @@ impl App {
                 // Drop the lock on debugger to avoid borrow issues
                 drop(debugger);
                 
-                // Check if the expression is a watchpoint ID
-                if expr.starts_with("wp") {
+                // Try to evaluate the expression to get an address
+                let address_opt = self.parse_address_expression(&expr);
+                
+                if let Some(address) = address_opt {
                     // Re-acquire the lock to remove the watchpoint
                     if let Ok(mut debugger) = self.debugger.lock() {
-                        if let Err(e) = debugger.remove_watchpoint_by_id(&expr) {
-                            error!("Failed to remove watchpoint {}: {}", expr, e);
+                        if let Err(e) = debugger.remove_watchpoint(address) {
+                            error!("Failed to remove watchpoint: {}", e);
                         } else {
-                            info!("Removed watchpoint {}", expr);
+                            info!("Removed watchpoint at 0x{:x}", address);
                         }
                     }
                 } else {
-                    // Try to parse as an address
-                    let address = self.parse_address_expression(&expr);
-                    
-                    if let Some(address) = address {
-                        // Re-acquire the lock to remove the watchpoint
-                        if let Ok(mut debugger) = self.debugger.lock() {
-                            if let Err(e) = debugger.remove_watchpoint(address) {
-                                error!("Failed to remove watchpoint at 0x{:x}: {}", address, e);
-                            } else {
-                                info!("Removed watchpoint at 0x{:x}", address);
-                            }
-                        }
-                    } else {
-                        error!("Could not determine address for watchpoint: {}", expr);
-                    }
+                    error!("Could not determine address for watchpoint: {}", expr);
                 }
             },
             Command::WatchList => {
