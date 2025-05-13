@@ -1,9 +1,12 @@
-pub mod core;
-pub mod breakpoint;
 pub mod memory;
+pub mod breakpoint;
+pub mod core;
 pub mod registers;
 pub mod symbols;
 pub mod threads;
+pub mod variables;
 pub mod disasm;
 pub mod tracer;
-pub mod variables;
+pub mod macho_parser;
+pub mod dwarf;
+pub mod dwarf_controller;

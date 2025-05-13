@@ -7,13 +7,5 @@
 # Details:
 Implement process attachment, memory reading/writing, register access, and thread control using mach_vm APIs and ptrace.
 
-# Implementation Notes:
-- Implemented MacOS-specific Mach kernel integration in platform/macos.rs
-- Fixed pointer cast issues in memory reading/writing functions
-- Added proper error handling for Mach API calls
-- Fixed documentation formatting and backticks
-- Improved memory safety with better bounds checking
-- Structured code to handle error cases more consistently
-
 # Test Strategy:
 Create unit tests for each Mach API wrapper function and integration tests for process control flow.

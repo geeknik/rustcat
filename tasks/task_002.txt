@@ -1,23 +1,11 @@
 # Task ID: 2
 # Title: Develop Terminal UI Framework
 # Status: done
-# Dependencies: 1
+# Dependencies: None
 # Priority: high
 # Description: Build a responsive terminal user interface using ratatui/crossterm with proper layouts and components.
 # Details:
 Create a modular TUI framework that supports various views (code, memory, registers, stack), responsive layouts, and efficient rendering. Implement proper input handling for keyboard/mouse events and ensure UI updates don't block the debugger.
-
-# Implementation Notes:
-- Added frame time tracking to measure UI performance for sub-10ms requirement
-- Added performance metrics display in status bar with color coding (green/yellow/red)
-- Implemented F3 key binding to toggle performance metrics display
-- Added context-sensitive keyboard shortcut help bar
-- Implemented F1 key binding to toggle detailed help overlay
-- Improved the status bar to show more useful information
-- Fixed a critical borrowing issue in the main loop that was causing compiler errors
-- Converted mutable references to immutable where possible
-- Fixed UI function signatures to be more efficient
-- Implemented proper error handling for UI rendering functions
 
 # Test Strategy:
 Test UI rendering performance with benchmarks, ensure responsive input handling, and verify proper layout in different terminal sizes.

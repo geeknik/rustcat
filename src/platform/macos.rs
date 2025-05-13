@@ -22,6 +22,7 @@ use mach2::vm_region::vm_region_basic_info_data_64_t;
 // Libc for waitpid, ptrace
 use libc::{pid_t, waitpid, WIFSTOPPED, WSTOPSIG};
 use libc::{PT_ATTACHEXC, PT_DETACH, PT_CONTINUE};
+use libc::pthread_getname_np;
 
 use crate::debugger::registers::{Registers, Register};
 use crate::platform::WatchpointType;
@@ -1792,6 +1793,42 @@ impl MacosDebugger {
         } else {
             Err(anyhow!("Failed to get program counter for thread {}", thread_id))
         }
+    }
+
+    /// Gets thread name using pthread API, returning None if the thread doesn't have a name
+    pub fn get_thread_name(thread: libc::pthread_t) -> Option<String> {
+        let mut buf = [0u8; 64];
+        unsafe {
+            pthread_getname_np(thread, buf.as_mut_ptr() as *mut libc::c_char, buf.len());
+        }
+        let name = String::from_utf8_lossy(&buf).trim_end_matches('\0').to_string();
+        if name.is_empty() {
+            None
+        } else {
+            Some(name)
+        }
+    }
+
+    /// Checks if a thread is the main thread
+    pub fn is_main_thread(&self, thread_id: u64) -> bool {
+        // On macOS, typically the first thread (index 0) is the main thread
+        // But for more accurate results we can check specific properties:
+        
+        // 1. Check thread name - main threads often have "main thread" as name
+        if let Some(name) = MacosDebugger::get_thread_name(thread_id as libc::pthread_t) {
+            if name.to_lowercase().contains("main") {
+                return true;
+            }
+        }
+        
+        // 2. As a fallback, check if it's the first thread in our list
+        if let Ok(threads) = self.get_threads(self.get_current_pid().unwrap_or(-1)) {
+            // Compare the first thread in our list with the given thread_id
+            // Convert the thread_act_t type to u64 for comparison
+            return threads.first().map(|&t| t as u64) == Some(thread_id);
+        }
+        
+        false
     }
 }
 

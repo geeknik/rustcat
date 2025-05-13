@@ -20,9 +20,7 @@
       "priority": "high",
       "status": "done",
       "testStrategy": "Test UI rendering performance with benchmarks, ensure responsive input handling, and verify proper layout in different terminal sizes.",
-      "dependencies": [
-        "1"
-      ]
+      "dependencies": []
     },
     {
       "id": "3",
@@ -52,9 +50,10 @@
       "description": "Create a versatile memory inspection system with multiple view formats.",
       "details": "Support hex, ASCII, UTF-8, integer, and floating-point views. Implement memory region tracking, permissions visualization, and editable memory.",
       "priority": "medium",
-      "status": "pending",
+      "status": "done",
       "testStrategy": "Test with various memory types, edge cases like page boundaries, and verify data representation in different formats.",
-      "dependencies": []
+      "dependencies": [],
+      "implementationNotes": "Implemented a comprehensive memory inspection system in memory.rs with support for multiple view formats (hex, ASCII, UTF-8, integer, floating-point), memory region tracking with permissions visualization, and memory search capabilities. The TUI components in views.rs and app.rs provide a user interface for the memory inspector with format cycling and visual display."
     },
     {
       "id": "6",
@@ -62,19 +61,19 @@
       "description": "Develop a system for tracking and controlling threads in the debugged process.",
       "details": "Support thread creation/deletion detection, thread state tracking, thread naming, thread-specific breakpoints, and freezing/thawing individual threads.",
       "priority": "medium",
-      "status": "pending",
+      "status": "in-progress",
       "testStrategy": "Test with multithreaded applications, verify state transitions, and ensure proper handling of thread events.",
       "dependencies": []
     },
     {
       "id": "7",
       "title": "Implement DWARF Parsing",
-      "description": "Create a system for parsing DWARF debug information for enhanced debugging capabilities.",
-      "details": "Integrate the gimli crate, implement source line mapping, function information extraction, and variable type information parsing.",
+      "description": "Add DWARF debug information parsing to enhance debugging capabilities",
+      "status": "blocked",
+      "dependencies": [5],
       "priority": "medium",
-      "status": "pending",
-      "testStrategy": "Test with various DWARF format versions and compiler outputs. Verify correct line mapping and type reconstruction.",
-      "dependencies": []
+      "details": "Implemented the initial DWARF parsing functionality by creating src/debugger/dwarf.rs and src/debugger/dwarf_controller.rs. Currently, there are some build issues related to lifetimes and borrowing that need to be resolved. The implementation includes:\n\n1. Basic DWARF parsing using the gimli crate\n2. Source code line information extraction\n3. Function/variable debug information\n4. Type system parsing\n5. Integration with the core debugger\n\nBuild issues that need to be resolved:\n1. Lifetime parameters for DwarfParser and DwarfController\n2. Fixing mutable borrowing conflicts in the debugger core\n3. Ensuring proper integration with the App struct\n4. Resolving lifetime issues in method signatures\n\nOnce these issues are fixed, this implementation will enable source-level debugging with DWARF information, making it possible to view source code alongside disassembly, and providing rich type information for variables.",
+      "testStrategy": "Test the DWARF parser with a simple C program compiled with debug symbols. Verify that it correctly extracts function information, source line mappings, and variable types. Test integration with the TUI source code view."
     },
     {
       "id": "8",
@@ -92,9 +91,10 @@
       "description": "Build a command parsing system for the debugger's command-line interface.",
       "details": "Create a robust parser for various debugger commands, implement validation, error handling, and support for command aliases and shortcuts.",
       "priority": "medium",
-      "status": "pending",
+      "status": "done",
       "testStrategy": "Test with valid and invalid command inputs, edge cases, and verify correct command routing.",
-      "dependencies": []
+      "dependencies": [],
+      "implementationNotes": "Implemented a comprehensive command parsing system in app.rs with support for various debugger commands including breakpoints, execution control, memory inspection, register viewing, and watchpoints. Added command history, command completion, and error handling for invalid inputs. The UI includes a dedicated command view with input area and command output display."
     },
     {
       "id": "10",

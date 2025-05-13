@@ -7,7 +7,7 @@ use ratatui::{
     backend::Backend,
     layout::{Constraint, Direction, Layout, Rect, Alignment, Margin},
     style::{Color, Modifier, Style},
-    text::{Line, Span},
+    text::{Line, Span, Text},
     widgets::{Block, Borders, Padding, Tabs, Paragraph, BorderType, List, ListItem, ListState, Clear, Wrap},
     symbols,
     Frame,
@@ -164,6 +164,13 @@ fn draw_title_bar<B: Backend>(f: &mut Frame<B>, app: &App, area: Rect) {
                 Style::default()
             }
         ),
+        Span::styled("[9] Source", 
+            if matches!(app.current_view, View::Source) { 
+                Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)
+            } else { 
+                Style::default()
+            }
+        ),
     ];
     
     let tabs = Tabs::new(vec![Line::from(titles)])
@@ -185,6 +192,7 @@ fn draw_title_bar<B: Backend>(f: &mut Frame<B>, app: &App, area: Rect) {
             View::Trace => 5,
             View::Variables => 6,
             View::Command => 7,
+            View::Source => 8,
         });
     
     f.render_widget(tabs, area);
@@ -196,6 +204,10 @@ fn draw_main_area<B: Backend>(f: &mut Frame<B>, app: &App, area: Rect) {
         View::Code => {
             let code_view = CodeView::new();
             code_view.render(f, area);
+        },
+        View::Source => {
+            // Use the source code view with DWARF info
+            draw_source_view(f, area, app);
         },
         View::Memory => {
             // Use our enhanced memory view
@@ -385,19 +397,22 @@ fn draw_help_bar<B: Backend>(f: &mut Frame<B>, app: &App, area: Rect) {
             "[F1] Help | [F3] Toggle Perf | [Tab] Group | [↑/↓] Select | [Enter] Edit | [r] Refresh",
             
         (View::Stack, _) => 
-            "[F1] Help | [F3] Toggle Perf | [↑/↓] Select Frame | [Enter] Jump to Frame | [Space] Show Variables",
+            "[F1] Help | [F3] Toggle Perf | [↑/↓] Navigate | [Enter] Select Frame | [r] Refresh",
             
         (View::Threads, _) => 
-            "[F1] Help | [F3] Toggle Perf | [↑/↓] Select | [Enter] Switch | [Space] Suspend/Resume | [k] Kill",
+            "[F1] Help | [F3] Toggle Perf | [↑/↓] Navigate | [Enter] Select Thread | [r] Refresh | [s] Suspend | [c] Continue",
             
         (View::Trace, _) => 
-            "[F1] Help | [F3] Toggle Perf | [↑/↓] Navigate | [c] Clear | [f] Filter | [s] Save | [Space] Collapse/Expand",
+            "[F1] Help | [F3] Toggle Perf | [c] Clear | [f] Filter | [t] Toggle Stats | [↑/↓] Scroll",
             
         (View::Variables, _) => 
-            "[F1] Help | [F3] Toggle Perf | [↑/↓] Select | [Enter] Expand | [w] Watch | [e] Edit | [Space] Show Memory",
+            "[F1] Help | [F3] Toggle Perf | [p] Print | [w] Watch | [e] Eval | [Enter] Expand | [↑/↓] Navigate",
             
         (View::Command, _) => 
-            "[F1] Help | [F3] Toggle Perf | [↑/↓] History | [Tab] Complete | [Ctrl+C] Clear | [Enter] Execute",
+            "[F1] Help | [F3] Toggle Perf | [Esc] Exit | [↑/↓] History | [Enter] Execute",
+            
+        (View::Source, _) => 
+            "[F1] Help | [F3] Toggle Perf | [↑/↓] Scroll | [b] Set Breakpoint | [g] Go to Line | [s] Toggle Inlined",
     };
     
     // Create the paragraph widget
@@ -591,6 +606,7 @@ fn view_to_string(view: View) -> String {
         View::Command => "Command".to_string(),
         View::Trace => "Trace".to_string(),
         View::Variables => "Variables".to_string(),
+        View::Source => "Source".to_string(),
     }
 }
 
@@ -676,4 +692,90 @@ fn draw_context_menu<B: Backend>(f: &mut Frame<B>, app: &App, position: (u16, u1
     // Render the menu
     f.render_widget(Clear, menu_area);
     f.render_widget(menu, menu_area);
+}
+
+/// Draw source code view in the specified area
+fn draw_source_view<B: Backend>(
+    f: &mut Frame<B>,
+    area: Rect,
+    app: &App,
+) {
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .title("Source Code");
+    
+    let inner_area = block.inner(area);
+    f.render_widget(block, area);
+    
+    // Check if DWARF debugging is available
+    if !app.is_dwarf_enabled() {
+        let message = Line::from(vec![
+            Span::styled("DWARF debugging not enabled or debug info not found.", 
+                Style::default().fg(Color::Yellow))
+        ]);
+        let text = Text::from(vec![message]);
+        let paragraph = Paragraph::new(text)
+            .alignment(Alignment::Center)
+            .wrap(Wrap { trim: true });
+        f.render_widget(paragraph, inner_area);
+        return;
+    }
+    
+    // Get the source context from app
+    if let Some((file_path, lines)) = &app.current_source_context {
+        // Create title with file path
+        let title = format!("Source: {}", file_path);
+        let block = Block::default()
+            .borders(Borders::ALL)
+            .title(title);
+        
+        // Show source code
+        let mut text_lines = Vec::new();
+        
+        // Add file header
+        text_lines.push(Line::from(vec![
+            Span::styled(format!("File: {}", file_path), 
+                Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD))
+        ]));
+        
+        // Add empty line
+        text_lines.push(Line::from(""));
+        
+        // Create lines with line numbers and highlighting for current line
+        for &(line_num, ref line_text, is_current) in lines {
+            let line_num_span = Span::styled(
+                format!("{:4} | ", line_num),
+                Style::default().fg(Color::DarkGray)
+            );
+            
+            let line_span = if is_current {
+                Span::styled(
+                    line_text,
+                    Style::default().bg(Color::DarkGray).fg(Color::Yellow).add_modifier(Modifier::BOLD)
+                )
+            } else {
+                Span::raw(line_text)
+            };
+            
+            text_lines.push(Line::from(vec![line_num_span, line_span]));
+        }
+        
+        // Create the paragraph
+        let paragraph = Paragraph::new(text_lines)
+            .block(block)
+            .scroll((app.source_scroll as u16, 0));
+        
+        f.render_widget(paragraph, inner_area);
+    } else {
+        // No source context available
+        let message = Line::from(vec![
+            Span::styled("Source information not available for current location.", 
+                Style::default().fg(Color::Yellow))
+        ]);
+        let text = Text::from(vec![message]);
+        let paragraph = Paragraph::new(text)
+            .alignment(Alignment::Center)
+            .wrap(Wrap { trim: true });
+        f.render_widget(paragraph, inner_area);
+    }
 } 

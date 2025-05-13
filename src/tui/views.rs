@@ -1,15 +1,10 @@
-use std::cmp::min;
-use byteorder::{ByteOrder, LittleEndian};
 use ratatui::{
     backend::Backend,
-    layout::{Alignment, Constraint, Direction, Layout, Margin, Rect},
-    style::{Color, Modifier, Style, Stylize},
-    symbols,
+    layout::{Rect, Alignment, Layout, Constraint, Direction},
+    style::{Color, Modifier, Style},
     text::{Line, Span},
-    widgets::{
-        Block, Borders, Cell, Clear, List, ListItem, ListState, Padding, 
-        Paragraph, Row, Table, Tabs, Wrap
-    },
+    widgets::{Block, Borders, List, ListItem, Paragraph, Table, Row, Cell, Tabs, ListState, Wrap},
+    symbols,
     Frame,
 };
 
@@ -312,117 +307,16 @@ pub fn draw_memory_view<B: Backend>(
     memory_data: Option<&Vec<u8>>,
     memory_address: u64,
 ) {
-    // Define a header with information
-    let header_height = 3;
-    let footer_height = 2;
-    let body_height = area.height.saturating_sub(header_height + footer_height);
+    let title = Line::from(Span::styled(
+        "Memory Viewer",
+        Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD),
+    ));
     
-    // Split the area into sections
-    let chunks = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Length(header_height),
-            Constraint::Min(5),
-            Constraint::Length(footer_height),
-        ])
-        .split(area);
-    
-    let header = chunks[0];
-    let body = chunks[1];
-    let footer = chunks[2];
-    
-    // Create header with memory information
-    let mut header_text = Vec::new();
-    
-    if let Some(data) = memory_data {
-        // Get current format
-        let format_str = app.get_memory_format().as_str();
-        let region_info = if let Some(debugger) = app.get_debugger().lock().ok() {
-            if let Some(_mem_map) = debugger.get_memory_map() {
-                if let Some(region) = _mem_map.find_region(memory_address) {
-                    format!(
-                        " | Region: {:016x}-{:016x} ({}) {}",
-                        region.base,
-                        region.end(),
-                        region.protection,
-                        region.name.as_deref().unwrap_or("")
-                    )
-                } else {
-                    String::new()
-                }
-            } else {
-                String::new()
-            }
-        } else {
-            String::new()
-        };
-        
-        header_text.push(Line::from(vec![
-            Span::styled(
-                format!("Memory at 0x{:016x} - 0x{:016x}", memory_address, memory_address + data.len() as u64),
-                Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)
-            ),
-            Span::raw(format!(" | Format: {}", format_str)),
-            Span::raw(region_info),
-        ]));
-        
-        // Second line shows the status text
-        header_text.push(Line::from(vec![
-            Span::styled("Status: ", Style::default().fg(Color::Yellow)),
-            Span::raw(&app.memory_status),
-        ]));
-        
-        // Third line shows controls
-        header_text.push(Line::from(vec![
-            Span::styled("F1", Style::default().fg(Color::LightGreen)).add_modifier(Modifier::BOLD),
-            Span::raw(": Help | "),
-            Span::styled("Tab", Style::default().fg(Color::LightGreen)).add_modifier(Modifier::BOLD),
-            Span::raw(": Format | "),
-            Span::styled("e", Style::default().fg(Color::LightGreen)).add_modifier(Modifier::BOLD),
-            Span::raw(": Edit | "),
-            Span::styled("/", Style::default().fg(Color::LightGreen)).add_modifier(Modifier::BOLD),
-            Span::raw(": Search | "),
-            Span::styled("g", Style::default().fg(Color::LightGreen)).add_modifier(Modifier::BOLD),
-            Span::raw(": Jump | "),
-            Span::styled("w", Style::default().fg(Color::LightGreen)).add_modifier(Modifier::BOLD),
-            Span::raw(": Watch | "),
-            Span::styled("Space", Style::default().fg(Color::LightGreen)).add_modifier(Modifier::BOLD),
-            Span::raw(": Select"),
-        ]));
-    } else {
-        // No data loaded yet
-        header_text.push(Line::from(Span::styled(
-            "Memory Inspector - No Data Loaded",
-            Style::default().fg(Color::Yellow)
-        )));
-        
-        header_text.push(Line::from(Span::raw(
-            "Use 'memory <address> <size>' to view memory."
-        )));
-        
-        header_text.push(Line::from(Span::raw("")));
-    }
-    
-    let header_block = Block::default()
+    let block = Block::default()
         .borders(Borders::ALL)
-        .border_style(Style::default().fg(Color::Cyan))
-        .title("Memory Inspector")
-        .title_alignment(Alignment::Center);
-    
-    let header_paragraph = Paragraph::new(header_text)
-        .block(header_block)
-        .wrap(Wrap { trim: true });
-    
-    f.render_widget(header_paragraph, header);
-    
-    // Now render the main memory view
-    let body_block = Block::default()
-        .borders(Borders::ALL)
-        .border_style(Style::default().fg(if app.current_view == View::Memory {
-            Color::Green
-        } else {
-            Color::Gray
-        }));
+        .title(title.alignment(Alignment::Center));
+
+    let _inner_area = block.inner(area);
     
     if let Some(data) = memory_data {
         // Get any watchpoints that might be covering this memory region
@@ -476,19 +370,13 @@ pub fn draw_memory_view<B: Backend>(
             rows.push(Line::from(Span::raw("──────────────────────────────────────────────────────")));
         }
         
-        // Calculate the visible range based on scroll
-        let total_rows = (data.len() + bytes_per_row - 1) / bytes_per_row;
-        let visible_rows = body_height as usize - 2; // Account for block borders
-        let scroll_offset = app.memory_scroll.min(total_rows.saturating_sub(visible_rows));
-        
-        // Process visible rows of memory data
-        for row_idx in scroll_offset..min(scroll_offset + visible_rows, total_rows) {
-            let start_idx = row_idx * bytes_per_row;
-            let end_idx = min((row_idx + 1) * bytes_per_row, data.len());
-            let chunk = &data[start_idx..end_idx];
+        // Process each row of memory data
+        for (i, chunk) in data.chunks(bytes_per_row).enumerate() {
+            // ... existing code for generating row_address, hex_text, ascii_text ...
             
             // Check if any address in this row has a watchpoint
-            let row_address = memory_address + (row_idx * bytes_per_row) as u64;
+            let row_address = memory_address + (i * bytes_per_row) as u64;
+            let _row_end_address = row_address + chunk.len() as u64;
             
             // Create arrays to track which bytes are covered by which watchpoint types
             let mut byte_watchpoints = vec![None; chunk.len()];
@@ -508,51 +396,45 @@ pub fn draw_memory_view<B: Backend>(
             }
             
             // Generate hex representation with per-byte watchpoint highlighting
+            let mut hex_text = String::new();
             let mut hex_spans = Vec::new();
             
             for (byte_idx, byte) in chunk.iter().enumerate() {
                 let byte_text = format!("{:02x}", byte);
-                let is_cursor_at_byte = row_idx == app.memory_cursor.0 && byte_idx == app.memory_cursor.1;
-                let is_selected = app.is_position_selected(row_idx, byte_idx, bytes_per_row);
                 
-                // Base style
-                let mut style = Style::default().fg(Color::White);
-                
-                // Handle watchpoint styling
                 if let Some(wp_type) = byte_watchpoints[byte_idx] {
-                    match wp_type {
+                    // Style based on watchpoint type
+                    let style = match wp_type {
                         crate::platform::WatchpointType::Read => 
-                            style = style.fg(Color::Blue).add_modifier(Modifier::BOLD),
+                            Style::default().fg(Color::Blue).add_modifier(Modifier::BOLD),
                         crate::platform::WatchpointType::Write => 
-                            style = style.fg(Color::Red).add_modifier(Modifier::BOLD),
+                            Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
                         crate::platform::WatchpointType::ReadWrite => 
-                            style = style.fg(Color::Magenta).add_modifier(Modifier::BOLD),
+                            Style::default().fg(Color::Magenta).add_modifier(Modifier::BOLD),
                         crate::platform::WatchpointType::Conditional => 
-                            style = style.fg(Color::Yellow).add_modifier(Modifier::BOLD),
+                            Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD),
                         crate::platform::WatchpointType::Logging => 
-                            style = style.fg(Color::Green).add_modifier(Modifier::BOLD),
+                            Style::default().fg(Color::Green).add_modifier(Modifier::BOLD),
                     };
+                    
+                    hex_spans.push(Span::styled(byte_text.clone(), style));
+                } else {
+                    hex_spans.push(Span::styled(byte_text.clone(), Style::default().fg(Color::White)));
                 }
-                
-                // Handle selection and cursor styling
-                if is_cursor_at_byte {
-                    if app.current_view == View::Memory {
-                        style = style.bg(Color::DarkGray).add_modifier(Modifier::BOLD);
-                    }
-                }
-                
-                if is_selected {
-                    style = style.bg(Color::Blue);
-                }
-                
-                hex_spans.push(Span::styled(byte_text, style));
                 
                 if byte_idx < chunk.len() - 1 {
                     hex_spans.push(Span::raw(" "));
                 }
+                hex_text.push_str(&format!("{:02x} ", byte));
+            }
+            
+            // Trim trailing space
+            if !hex_text.is_empty() {
+                hex_text.pop();
             }
             
             // Generate ASCII representation
+            let mut ascii_text = String::new();
             let mut ascii_spans = Vec::new();
             
             for (byte_idx, &byte) in chunk.iter().enumerate() {
@@ -562,55 +444,36 @@ pub fn draw_memory_view<B: Backend>(
                     '.'
                 };
                 
-                let is_cursor_at_byte = row_idx == app.memory_cursor.0 && byte_idx == app.memory_cursor.1;
-                let is_selected = app.is_position_selected(row_idx, byte_idx, bytes_per_row);
-                
-                // Base style
-                let mut style = Style::default().fg(Color::Cyan);
-                
-                // Handle watchpoint styling
                 if let Some(wp_type) = byte_watchpoints[byte_idx] {
-                    match wp_type {
+                    // Style based on watchpoint type
+                    let style = match wp_type {
                         crate::platform::WatchpointType::Read => 
-                            style = style.fg(Color::Blue).add_modifier(Modifier::BOLD),
+                            Style::default().fg(Color::Blue).add_modifier(Modifier::BOLD),
                         crate::platform::WatchpointType::Write => 
-                            style = style.fg(Color::Red).add_modifier(Modifier::BOLD),
+                            Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
                         crate::platform::WatchpointType::ReadWrite => 
-                            style = style.fg(Color::Magenta).add_modifier(Modifier::BOLD),
+                            Style::default().fg(Color::Magenta).add_modifier(Modifier::BOLD),
                         crate::platform::WatchpointType::Conditional => 
-                            style = style.fg(Color::Yellow).add_modifier(Modifier::BOLD),
+                            Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD),
                         crate::platform::WatchpointType::Logging => 
-                            style = style.fg(Color::Green).add_modifier(Modifier::BOLD),
+                            Style::default().fg(Color::Green).add_modifier(Modifier::BOLD),
                     };
+                    
+                    ascii_spans.push(Span::styled(c.to_string(), style));
+                } else {
+                    ascii_spans.push(Span::styled(c.to_string(), Style::default().fg(Color::Cyan)));
                 }
                 
-                // Handle selection and cursor styling
-                if is_cursor_at_byte {
-                    if app.current_view == View::Memory {
-                        style = style.bg(Color::DarkGray).add_modifier(Modifier::BOLD);
-                    }
-                }
-                
-                if is_selected {
-                    style = style.bg(Color::Blue);
-                }
-                
-                ascii_spans.push(Span::styled(c.to_string(), style));
+                ascii_text.push(c);
             }
             
             // Build row with all spans
             let mut row_spans = Vec::new();
             
             // Address (yellow)
-            let addr_style = if app.current_view == View::Memory && row_idx == app.memory_cursor.0 {
-                Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)
-            } else {
-                Style::default().fg(Color::Yellow)
-            };
-            
             row_spans.push(Span::styled(
                 format!("{:016x}", row_address),
-                addr_style
+                Style::default().fg(Color::Yellow)
             ));
             
             // Separator
@@ -629,109 +492,22 @@ pub fn draw_memory_view<B: Backend>(
             rows.push(Line::from(row_spans));
         }
         
+        // Add a legend at the bottom
+        rows.push(Line::from(Span::raw(""))); // Empty line as separator
+        rows.push(Line::from(vec![
+            Span::styled("READ", Style::default().fg(Color::Blue).add_modifier(Modifier::BOLD)),
+            Span::raw(" "),
+            Span::styled("WRITE", Style::default().fg(Color::Red).add_modifier(Modifier::BOLD)),
+            Span::raw(" "),
+            Span::styled("READ/WRITE", Style::default().fg(Color::Magenta).add_modifier(Modifier::BOLD)),
+            Span::raw(" watchpoints")
+        ]));
+
         let paragraph = Paragraph::new(rows)
-            .block(body_block)
+            .block(block)
             .wrap(Wrap { trim: true });
-        
-        f.render_widget(paragraph, body);
-        
-        // Render footer with current value information
-        let mut footer_text = Vec::new();
-        
-        // Show current cursor and value information
-        if data.len() > 0 {
-            let bytes_per_row = 16; // Must match the display logic
-            let cursor_offset = app.get_memory_cursor_offset(bytes_per_row);
-            let cursor_address = memory_address + cursor_offset as u64;
-            
-            let mut value_info = Vec::new();
-            
-            // Only try to get values if the offset is within data
-            if cursor_offset < data.len() {
-                let debugger = app.get_debugger().lock().unwrap();
-                if let Some(_mem_map) = debugger.get_memory_map() {
-                    // Add the basic u8 value
-                    let byte_value = data[cursor_offset];
-                    value_info.push(format!("u8: {} (0x{:02x})", byte_value, byte_value));
-                    value_info.push(format!("i8: {}", byte_value as i8));
-                    
-                    // Add wider values if enough data is available
-                    if cursor_offset + 1 < data.len() {
-                        value_info.push(format!("u16: {}", LittleEndian::read_u16(&data[cursor_offset..])));
-                        value_info.push(format!("i16: {}", LittleEndian::read_i16(&data[cursor_offset..])));
-                    }
-                    
-                    if cursor_offset + 3 < data.len() {
-                        value_info.push(format!("u32: {}", LittleEndian::read_u32(&data[cursor_offset..])));
-                        value_info.push(format!("i32: {}", LittleEndian::read_i32(&data[cursor_offset..])));
-                        value_info.push(format!("f32: {:.6}", LittleEndian::read_f32(&data[cursor_offset..])));
-                    }
-                    
-                    if cursor_offset + 7 < data.len() {
-                        value_info.push(format!("u64: {}", LittleEndian::read_u64(&data[cursor_offset..])));
-                        value_info.push(format!("i64: {}", LittleEndian::read_i64(&data[cursor_offset..])));
-                        value_info.push(format!("f64: {:.6}", LittleEndian::read_f64(&data[cursor_offset..])));
-                    }
-                }
-            }
-            
-            let cursor_info = format!("Cursor: 0x{:x} ({})", cursor_address, cursor_offset);
-            let value_str = value_info.join(" | ");
-            
-            footer_text.push(Line::from(vec![
-                Span::styled("Address: ", Style::default().fg(Color::Yellow)),
-                Span::styled(
-                    cursor_info,
-                    Style::default().fg(Color::White)
-                ),
-                Span::raw(" | "),
-                Span::styled("Values: ", Style::default().fg(Color::Yellow)),
-                Span::styled(value_str, Style::default().fg(Color::White)),
-            ]));
-        } else {
-            footer_text.push(Line::from(Span::raw("No data available")));
-        }
-        
-        let footer_paragraph = Paragraph::new(footer_text)
-            .block(Block::default().borders(Borders::ALL).border_style(Style::default().fg(Color::Cyan)))
-            .wrap(Wrap { trim: true });
-        
-        f.render_widget(footer_paragraph, footer);
-        
-        // Handle search/edit/jump input overlays
-        if app.memory_search_mode || app.memory_edit_mode || app.memory_jump_mode {
-            let popup_width = 60;
-            let popup_height = 3;
-            let popup_x = (area.width - popup_width) / 2;
-            let popup_y = (area.height - popup_height) / 2;
-            
-            let popup_area = Rect::new(
-                area.x + popup_x,
-                area.y + popup_y,
-                popup_width,
-                popup_height,
-            );
-            
-            let prompt = if app.memory_search_mode {
-                format!("Search: {}", app.memory_search_input)
-            } else if app.memory_edit_mode {
-                format!("Edit value (hex): {}", app.memory_edit_buffer)
-            } else { // memory_jump_mode
-                format!("Jump to address: 0x{}", app.memory_jump_input)
-            };
-            
-            let popup_block = Block::default()
-                .borders(Borders::ALL)
-                .border_style(Style::default().fg(Color::Yellow))
-                .title("Input");
-            
-            let popup_text = Paragraph::new(Line::from(Span::raw(&prompt)))
-                .block(popup_block)
-                .wrap(Wrap { trim: true });
-            
-            f.render_widget(Clear, popup_area);
-            f.render_widget(popup_text, popup_area);
-        }
+
+        f.render_widget(paragraph, area);
     } else {
         // No data, display a message
         let text = vec![Line::from(vec![
@@ -739,10 +515,10 @@ pub fn draw_memory_view<B: Backend>(
         ])];
 
         let paragraph = Paragraph::new(text)
-            .block(body_block)
+            .block(block)
             .wrap(Wrap { trim: true });
 
-        f.render_widget(paragraph, body);
+        f.render_widget(paragraph, area);
     }
 }
 
@@ -1537,5 +1313,93 @@ fn get_watchpoints_for_range(app: &App, start_addr: u64, end_addr: u64) -> Vec<W
             .collect()
     } else {
         Vec::new()
+    }
+}
+
+/// Draw source code view in the specified area
+pub fn draw_source_view<B: Backend>(
+    f: &mut Frame<B>,
+    area: Rect,
+    app: &App,
+) {
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .title("Source Code");
+    
+    // Create a list area for source code display
+    let inner_area = block.inner(area);
+    f.render_widget(block, area);
+    
+    // Check if DWARF debugging is available
+    if !app.is_dwarf_enabled() {
+        let message = Line::from(vec![
+            Span::styled("DWARF debugging not enabled or debug info not found.", 
+                Style::default().fg(Color::Yellow))
+        ]);
+        
+        let paragraph = Paragraph::new(message)
+            .alignment(Alignment::Center)
+            .wrap(Wrap { trim: true });
+        
+        f.render_widget(paragraph, inner_area);
+        return;
+    }
+    
+    // Check if we have a current source context
+    if let Some((file_path, source_lines)) = &app.current_source_context {
+        // Create header with file path
+        let header = vec![
+            Line::from(vec![
+                Span::styled("File: ", Style::default().fg(Color::Yellow)),
+                Span::raw(file_path),
+            ])
+        ];
+        
+        // Create source code lines
+        let mut lines = Vec::new();
+        
+        for (line_num, content, is_current) in source_lines {
+            // Format the line number with fixed width
+            let line_num_str = format!("{:4} ", line_num);
+            
+            let mut spans = vec![
+                Span::styled(line_num_str, Style::default().fg(Color::Cyan)),
+            ];
+            
+            // If this is the current line, highlight it
+            if *is_current {
+                spans.push(Span::styled(
+                    format!("{}", content), 
+                    Style::default()
+                        .fg(Color::White)
+                        .bg(Color::DarkGray)
+                        .add_modifier(Modifier::BOLD)
+                ));
+            } else {
+                spans.push(Span::raw(format!("{}", content)));
+            }
+            
+            lines.push(Line::from(spans));
+        }
+        
+        // Combine header and source lines
+        let all_lines: Vec<Line> = header.into_iter().chain(lines).collect();
+        
+        let source_paragraph = Paragraph::new(all_lines)
+            .scroll((app.source_scroll as u16, 0))
+            .wrap(Wrap { trim: false });
+        
+        f.render_widget(source_paragraph, inner_area);
+    } else {
+        let message = Line::from(vec![
+            Span::styled("No source code available for the current location.", 
+                Style::default().fg(Color::Yellow))
+        ]);
+        
+        let paragraph = Paragraph::new(message)
+            .alignment(Alignment::Center)
+            .wrap(Wrap { trim: true });
+        
+        f.render_widget(paragraph, inner_area);
     }
 }

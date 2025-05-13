@@ -244,6 +244,11 @@ impl Thread {
         self.tid
     }
     
+    /// Get the thread ID (alias for tid)
+    pub fn thread_id(&self) -> u64 {
+        self.tid()
+    }
+    
     /// Get the thread name
     pub fn name(&self) -> Option<&str> {
         self.name.as_deref()
@@ -559,7 +564,9 @@ impl ThreadManager {
         // Add new threads
         for tid in tids {
             if !self.threads.contains_key(&tid) {
-                let thread = Thread::new(tid, None, false);
+                // Fetch thread name from platform if available
+                let name = crate::platform::MacosDebugger::get_thread_name(tid as libc::pthread_t);
+                let thread = Thread::new(tid, name, false);
                 self.add_thread(thread)?;
             }
         }
@@ -711,6 +718,11 @@ impl ThreadManager {
                 false
             }
         })
+    }
+    
+    /// Get a vector of all threads
+    pub fn get_threads(&self) -> Vec<&Thread> {
+        self.threads.values().collect()
     }
 }
 

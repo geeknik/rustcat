@@ -13,6 +13,10 @@ pub enum WatchpointType {
     Write,
     /// Watch for both read and write access
     ReadWrite,
+    /// Watch for conditional access
+    Conditional,
+    /// Watch for logging access
+    Logging,
 }
 
 impl WatchpointType {
@@ -22,6 +26,8 @@ impl WatchpointType {
             Self::Read => "read",
             Self::Write => "write",
             Self::ReadWrite => "read/write",
+            Self::Conditional => "conditional",
+            Self::Logging => "logging",
         }
     }
 }
@@ -117,3 +123,5 @@ pub use macos::MacosDebugger;
 
 #[cfg(not(target_os = "macos"))]
 pub use dummy::MacosDebugger;
+
+// pub use self::macos::get_thread_name; // Temporarily commented out until function is properly defined and exported

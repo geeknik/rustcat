@@ -1,0 +1,61 @@
+# RUSTCAT - Product Requirements Document
+
+## Project Overview
+RUSTCAT is a MacOS-only, Rust-based, fast-as-hell native debugger specifically designed for Apple Silicon (ARM64) processors. It aims to provide a responsive, terminal-based user interface with a focus on speed and efficiency. Unlike many other debuggers, RUSTCAT is not a wrapper around GDB or LLDB, but a from-scratch implementation that leverages macOS-specific APIs.
+
+## Core Objectives
+1. Platform Specificity: Target macOS on Apple Silicon (ARM64) only
+2. Performance: Achieve sub-10ms responsiveness for all interactive commands
+3. Terminal UI: Provide a keyboard-driven, terminal-based interface
+4. Custom Debug Engine: Build a debug engine from scratch without relying on existing debuggers
+5. Multithreaded Design: Utilize background worker pools for heavy operations
+6. Low-level Access: Leverage macOS-specific APIs for system interaction
+7. Security-First: Implement comprehensive security testing infrastructure
+
+## Key Features
+- Native code debugging for C, C++, Rust programs
+- Full ARM64 register support
+- Memory inspection with various views (hex, ASCII, UTF-8, numeric formats)
+- Breakpoint management with conditions and hit counts
+- Watchpoint support for hardware-assisted memory access monitoring
+- Thread management with state tracking and thread-specific breakpoints
+- DWARF parsing for symbol resolution and source code mapping
+- Function call tracing
+- Variable inspection and expression evaluation
+- Keyboard-driven TUI with split panels
+
+## Technical Requirements
+- Implement ptrace/Mach kernel integration for process control
+- Build efficient symbol resolution for ELF, Mach-O formats
+- Create a responsive TUI using ratatui/crossterm
+- Support for dynamic thread handling and call stack building
+- Implement DWARF parsing via gimli crate
+- Add comprehensive error handling and logging
+- Ensure thread safety and handle concurrent debugging sessions
+- Optimize performance for large binaries (2.5GB+ tested)
+
+## Security Requirements
+- Secure parsing of untrusted binary formats
+- Robust handling of malicious input
+- Memory-safe operations throughout the codebase
+- Comprehensive fuzzing for binary parsing, DWARF handling, and command input
+- Regular security scanning in CI/CD pipeline
+- Management of watchpoints and breakpoints in a secure manner
+
+## Development Milestones
+1. Complete core debugger engine functionality
+2. Improve TUI interface and navigation
+3. Enhance symbol resolution and DWARF parsing
+4. Add advanced breakpoint and watchpoint capabilities
+5. Implement thread management features
+6. Add comprehensive security testing
+7. Optimize performance for large binaries
+8. Enhance documentation and user guides
+
+## Quality Goals
+- All interactive operations respond in under 10ms
+- Binary parsing operations show progress for multi-second operations
+- Code follows Rust best practices and security guidelines
+- Test coverage ensures reliability across various debugging scenarios
+- Security testing prevents common vulnerabilities
+- Documentation provides clear usage examples 
