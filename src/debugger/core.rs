@@ -1172,7 +1172,7 @@ impl Debugger {
                     // self.platform.remove_hardware_watchpoint(pid, thread_id, address as usize)?;
                     
                     // Remove from breakpoint manager
-                    self.breakpoints.remove_breakpoint(address as usize).ok_or(anyhow!("No breakpoint found at address"))?;
+                    self.breakpoints.remove_breakpoint(address as usize).ok_or_else(|| anyhow!("No breakpoint found at address"))?;
                     
                     info!("Removed hardware watchpoint at 0x{:x}", address);
                     
@@ -1361,14 +1361,14 @@ impl Debugger {
                     if let Some((index, _)) = self.breakpoints.find_by_id(&bp_id) {
                         // First handle disabled status
                         let is_enabled = {
-                            let bp = self.breakpoints.get(index).ok_or(anyhow!("Breakpoint not found"))?;
+                            let bp = self.breakpoints.get(index).ok_or_else(|| anyhow!("Breakpoint not found"))?;
                             bp.is_enabled()
                         };
                         
                         if is_enabled {
                             // Must be in its own scope to avoid borrow conflicts
                             {
-                                let bp = self.breakpoints.get_mut(index).ok_or(anyhow!("Breakpoint not found"))?;
+                                let bp = self.breakpoints.get_mut(index).ok_or_else(|| anyhow!("Breakpoint not found"))?;
                                 bp.disable();
                             }
                             
@@ -1378,7 +1378,7 @@ impl Debugger {
                         
                         // Extract all info needed for decision making
                         let (bp_type, condition, log_message) = {
-                            let bp = self.breakpoints.get(index).ok_or(anyhow!("Breakpoint not found"))?;
+                            let bp = self.breakpoints.get(index).ok_or_else(|| anyhow!("Breakpoint not found"))?;
                             (
                                 bp.breakpoint_type(),
                                 bp.condition().clone().unwrap_or_default(),
@@ -1393,7 +1393,7 @@ impl Debugger {
                                     Ok(true) => {
                                         // Record hit in its own scope
                                         {
-                                            let bp = self.breakpoints.get_mut(index).ok_or(anyhow!("Breakpoint not found"))?;
+                                            let bp = self.breakpoints.get_mut(index).ok_or_else(|| anyhow!("Breakpoint not found"))?;
                                             bp.hit();
                                         }
                                         self.state = DebuggerState::Stopped;
@@ -1405,7 +1405,7 @@ impl Debugger {
                                         error!("Error evaluating condition: {}", e);
                                         // Record hit in its own scope
                                         {
-                                            let bp = self.breakpoints.get_mut(index).ok_or(anyhow!("Breakpoint not found"))?;
+                                            let bp = self.breakpoints.get_mut(index).ok_or_else(|| anyhow!("Breakpoint not found"))?;
                                             bp.hit();
                                         }
                                         self.state = DebuggerState::Stopped;
@@ -1419,7 +1419,7 @@ impl Debugger {
                             _ => {
                                 // Record hit in its own scope
                                 {
-                                    let bp = self.breakpoints.get_mut(index).ok_or(anyhow!("Breakpoint not found"))?;
+                                    let bp = self.breakpoints.get_mut(index).ok_or_else(|| anyhow!("Breakpoint not found"))?;
                                     bp.hit();
                                 }
                                 self.state = DebuggerState::Stopped;
@@ -1503,14 +1503,14 @@ impl Debugger {
                 if let Some(index) = self.breakpoints.find_index(pc) {
                     // First handle disabled status
                     let is_enabled = {
-                        let bp = self.breakpoints.get(index).ok_or(anyhow!("Breakpoint not found"))?;
+                        let bp = self.breakpoints.get(index).ok_or_else(|| anyhow!("Breakpoint not found"))?;
                         bp.is_enabled()
                     };
                     
                     if is_enabled {
                         // Must be in its own scope to avoid borrow conflicts
                         {
-                            let mut bp = self.breakpoints.get_mut(index).ok_or(anyhow!("Breakpoint not found"))?;
+                            let bp = self.breakpoints.get_mut(index).ok_or_else(|| anyhow!("Breakpoint not found"))?;
                             bp.disable();
                         }
                         
@@ -1520,7 +1520,7 @@ impl Debugger {
                     
                     // Extract all info needed for decision making
                     let (bp_type, condition, log_message) = {
-                        let bp = self.breakpoints.get(index).ok_or(anyhow!("Breakpoint not found"))?;
+                        let bp = self.breakpoints.get(index).ok_or_else(|| anyhow!("Breakpoint not found"))?;
                         (
                             bp.breakpoint_type(),
                             bp.condition().clone().unwrap_or_default(),
@@ -1535,7 +1535,7 @@ impl Debugger {
                                 Ok(true) => {
                                     // Record hit in its own scope
                                     {
-                                        let mut bp = self.breakpoints.get_mut(index).ok_or(anyhow!("Breakpoint not found"))?;
+                                        let bp = self.breakpoints.get_mut(index).ok_or_else(|| anyhow!("Breakpoint not found"))?;
                                         bp.hit();
                                     }
                                     self.state = DebuggerState::Stopped;
@@ -1547,7 +1547,7 @@ impl Debugger {
                                     error!("Error evaluating condition: {}", e);
                                     // Record hit in its own scope
                                     {
-                                        let mut bp = self.breakpoints.get_mut(index).ok_or(anyhow!("Breakpoint not found"))?;
+                                        let bp = self.breakpoints.get_mut(index).ok_or_else(|| anyhow!("Breakpoint not found"))?;
                                         bp.hit();
                                     }
                                     self.state = DebuggerState::Stopped;
@@ -1561,7 +1561,7 @@ impl Debugger {
                         _ => {
                             // Record hit in its own scope
                             {
-                                let mut bp = self.breakpoints.get_mut(index).ok_or(anyhow!("Breakpoint not found"))?;
+                                let bp = self.breakpoints.get_mut(index).ok_or_else(|| anyhow!("Breakpoint not found"))?;
                                 bp.hit();
                             }
                             self.state = DebuggerState::Stopped;
@@ -1595,14 +1595,14 @@ impl Debugger {
                     if let Some((index, _)) = self.watchpoints.find_by_id(&wp_id) {
                         // First handle disabled status
                         let is_enabled = {
-                            let wp = self.watchpoints.get(index).ok_or(anyhow!("Watchpoint not found"))?;
+                            let wp = self.watchpoints.get(index).ok_or_else(|| anyhow!("Watchpoint not found"))?;
                             wp.is_enabled()
                         };
                         
                         if is_enabled {
                             // Must be in its own scope to avoid borrow conflicts
                             {
-                                let mut wp = self.watchpoints.get_mut(index).ok_or(anyhow!("Watchpoint not found"))?;
+                                let wp = self.watchpoints.get_mut(index).ok_or_else(|| anyhow!("Watchpoint not found"))?;
                                 wp.disable();
                             }
                             
@@ -1612,7 +1612,7 @@ impl Debugger {
                         
                         // Extract all info needed for decision making
                         let (wp_type, condition, log_message) = {
-                            let wp = self.watchpoints.get(index).ok_or(anyhow!("Watchpoint not found"))?;
+                            let wp = self.watchpoints.get(index).ok_or_else(|| anyhow!("Watchpoint not found"))?;
                             (
                                 wp.watchpoint_type(),
                                 wp.condition().clone().unwrap_or_default(),
@@ -1627,7 +1627,7 @@ impl Debugger {
                                     Ok(true) => {
                                         // Record hit in its own scope
                                         {
-                                            let mut wp = self.watchpoints.get_mut(index).ok_or(anyhow!("Watchpoint not found"))?;
+                                            let wp = self.watchpoints.get_mut(index).ok_or_else(|| anyhow!("Watchpoint not found"))?;
                                             wp.hit();
                                         }
                                         self.state = DebuggerState::Stopped;
@@ -1639,7 +1639,7 @@ impl Debugger {
                                         error!("Error evaluating condition: {}", e);
                                         // Record hit in its own scope
                                         {
-                                            let mut wp = self.watchpoints.get_mut(index).ok_or(anyhow!("Watchpoint not found"))?;
+                                            let wp = self.watchpoints.get_mut(index).ok_or_else(|| anyhow!("Watchpoint not found"))?;
                                             wp.hit();
                                         }
                                         self.state = DebuggerState::Stopped;
@@ -1653,7 +1653,7 @@ impl Debugger {
                             _ => {
                                 // Record hit in its own scope
                                 {
-                                    let mut wp = self.watchpoints.get_mut(index).ok_or(anyhow!("Watchpoint not found"))?;
+                                    let wp = self.watchpoints.get_mut(index).ok_or_else(|| anyhow!("Watchpoint not found"))?;
                                     wp.hit();
                                 }
                                 self.state = DebuggerState::Stopped;
@@ -1722,7 +1722,7 @@ impl Debugger {
         // Find the breakpoint by address
         if let Some((index, _)) = self.breakpoints.find_by_address(address) {
             // Get a mutable reference to the breakpoint
-            let bp = self.breakpoints.get_mut(index).ok_or(anyhow!("Breakpoint not found"))?;
+            let bp = self.breakpoints.get_mut(index).ok_or_else(|| anyhow!("Breakpoint not found"))?;
             // Set enabled to false
             bp.disable();
             info!("Breakpoint at 0x{:x} disabled", address);
