@@ -67,6 +67,8 @@ pub struct Breakpoint {
     source_location: Option<(String, u32)>,
     /// User-provided breakpoint ID/name
     id: Option<String>,
+    /// Is this a temporary breakpoint (cleared after being hit)
+    is_temporary: bool,
 }
 
 impl Breakpoint {
@@ -84,6 +86,7 @@ impl Breakpoint {
             symbol_name: None,
             source_location: None,
             id: None,
+            is_temporary: false,
         }
     }
 
@@ -101,6 +104,7 @@ impl Breakpoint {
             symbol_name: None,
             source_location: None,
             id: None,
+            is_temporary: false,
         }
     }
     
@@ -266,6 +270,16 @@ impl Breakpoint {
         }
         
         format!("0x{:x}", self.address)
+    }
+
+    /// Set the temporary flag
+    pub fn set_temp(&mut self, is_temporary: bool) {
+        self.is_temporary = is_temporary;
+    }
+    
+    /// Check if this is a temporary breakpoint
+    pub fn is_temporary(&self) -> bool {
+        self.is_temporary
     }
 }
 

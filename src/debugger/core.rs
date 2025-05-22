@@ -11,7 +11,7 @@ use crate::debugger::breakpoint::{Breakpoint, BreakpointManager, ConditionEvalua
 use crate::debugger::memory::MemoryMap;
 use crate::debugger::registers::{Registers, Register};
 use crate::debugger::symbols::SymbolTable;
-use crate::debugger::threads::{ThreadManager, ThreadState, StackFrame, Thread};
+use crate::debugger::threads::{ThreadManager, ThreadState, StackFrame};
 use crate::debugger::disasm::{Disassembler, Instruction};
 use crate::debugger::tracer::FunctionTracer;
 use crate::debugger::variables::{VariableManager, Variable, VariableValue};
@@ -499,83 +499,214 @@ impl Debugger {
         if let Some(pid) = self.pid {
             info!("Stepping instruction");
             
-            // If we're at a breakpoint, we need to temporarily remove it,
-            // execute the instruction, then restore the breakpoint
-            let bp_addr = self.current_breakpoint.take();
-            
-            // Get current instruction for analysis
-            let current_instruction = if let Ok(current_pc) = self.get_registers().map(|r| r.get(Register::Pc).unwrap_or_default()) {
-                self.disassemble(current_pc, 1).ok().and_then(|ins| ins.first().cloned())
-            } else {
-                None
-            };
-            
-            if let Some(addr) = bp_addr {
-                // Temporarily remove the breakpoint
-                let bp = self.find_breakpoint(addr).ok_or_else(|| anyhow!("Breakpoint not found"))?;
-                let saved_data = bp.saved_data();
-                self.platform.remove_breakpoint(pid, addr, saved_data)?;
-                
-                // Step one instruction
-                self.platform.step(pid)?;
-                
-                // Restore the breakpoint
-                self.platform.set_breakpoint(pid, addr)?;
-            } else {
-                // No breakpoint, just step
-                self.platform.step(pid)?;
+            if self.state != DebuggerState::Stopped {
+                return Err(anyhow!("Cannot step: program not stopped"));
             }
             
-            // Wait for the process to stop
-            if let Err(e) = self.platform.wait_for_stop(pid, 1000) {
-                warn!("Error waiting for process to stop after step: {}", e);
-            }
+            // Check if we're at a breakpoint
+            let is_at_breakpoint = self.current_breakpoint.is_some();
             
-            // Record function call or return if appropriate
-            if let Some(instruction) = current_instruction {
+            if is_at_breakpoint {
                 // Get the current thread ID
-                let _thread_id = pid as u64; // For now, assume thread ID = process ID
+                let thread_id = self.thread_manager.current_thread_id().unwrap_or_default();
                 
-                // If this was a call instruction, record the function call
-                if instruction.is_call {
-                    let call_site = instruction.address;
-                    // Calculate target address - direct or indirect
-                    let target_addr = instruction.branch_target.unwrap_or_else(|| {
-                        // For indirect calls, we need to look at the current PC
-                        if let Ok(registers) = self.get_registers() {
-                            registers.get(Register::Pc).unwrap_or_default()
-                        } else {
-                            0
-                        }
-                    });
-                    
-                    // Record the call
-                    if let Err(e) = self.record_function_call(call_site, target_addr, _thread_id) {
-                        debug!("Could not record function call: {}", e);
-                    }
-                }
-                // If this was a return instruction, record the return
-                else if instruction.is_return {
-                    // Get return value from X0 register (ARM64 convention)
-                    let return_value = if let Ok(registers) = self.get_registers() {
-                        registers.get(Register::X0)
+                // If at a breakpoint, we need to:
+                // 1. Remove the breakpoint temporarily
+                // 2. Step one instruction
+                // 3. Re-insert the breakpoint
+                // 4. Continue if we're not at the breakpoint anymore
+                
+                if let Some(bp_addr) = self.current_breakpoint {
+                    if let Some((index, bp)) = self.breakpoints.find_by_address(bp_addr) {
+                        let saved_data = bp.saved_data();
+                        
+                        // Remove breakpoint temporarily
+                        self.platform.remove_breakpoint(pid, bp_addr, saved_data)?;
+                        
+                        // Step one instruction
+                        self.platform.step(pid)?;
+                        
+                        // Re-insert breakpoint
+                        self.platform.set_breakpoint(pid, bp_addr)?;
                     } else {
-                        None
-                    };
-                    
-                    // Record the return
-                    if let Err(e) = self.record_function_return(_thread_id, return_value) {
-                        debug!("Could not record function return: {}", e);
+                        // No breakpoint, just step
+                        self.platform.step(pid)?;
                     }
                 }
+                
+                // Wait for the process to stop again
+                if let Err(e) = self.platform.wait_for_stop(pid, 5000) {
+                    warn!("Error waiting for process to stop after step: {}", e);
+                } else {
+                    // Process stopped, update state
+                    self.state = DebuggerState::Stopped;
+                    
+                    // Update thread state
+                    if let Ok(registers) = self.get_registers() {
+                        let pc = registers.get(Register::Pc).unwrap_or_default();
+                        if let Err(e) = self.update_thread_state(thread_id, registers, ThreadState::Stopped, Some(format!("Stepped to 0x{:x}", pc)), pc) {
+                            warn!("Error updating thread state: {}", e);
+                        }
+                    }
+                    
+                    // Clear current breakpoint if we've moved past it
+                    if let Some(regs) = self.thread_manager.get_thread(thread_id).and_then(|t| t.registers()) {
+                        let pc = regs.get(Register::Pc).unwrap_or_default();
+                        if self.current_breakpoint != Some(pc) {
+                            self.current_breakpoint = None;
+                        }
+                    }
+                }
+                
+                return Ok(());
+            } else {
+                // Normal step without a breakpoint
+                self.platform.step(pid)?;
+                
+                // Wait for the process to stop
+                if let Err(e) = self.platform.wait_for_stop(pid, 5000) {
+                    warn!("Error waiting for process to stop after step: {}", e);
+                }
+                
+                // Update thread state
+                let thread_id = self.thread_manager.current_thread_id().unwrap_or_default();
+                if let Ok(registers) = self.get_registers() {
+                    let pc = registers.get(Register::Pc).unwrap_or_default();
+                    if let Err(e) = self.update_thread_state(thread_id, registers, ThreadState::Stopped, Some(format!("Stepped to 0x{:x}", pc)), pc) {
+                        warn!("Error updating thread state: {}", e);
+                    }
+                }
+                
+                return Ok(());
             }
-            
-            self.state = DebuggerState::Stopped;
         } else {
             return Err(anyhow!("Cannot step: program not loaded"));
         }
-        
-        Ok(())
+    }
+    
+    /// Step over a function call
+    pub fn step_over(&mut self) -> Result<()> {
+        if let Some(pid) = self.pid {
+            info!("Stepping over function call");
+            
+            if self.state != DebuggerState::Stopped {
+                return Err(anyhow!("Cannot step over: program not stopped"));
+            }
+            
+            // Get the current thread ID
+            let thread_id = self.thread_manager.current_thread_id().unwrap_or_default();
+            
+            // Get current instruction to see if it's a call
+            let pc = if let Ok(regs) = self.get_registers() {
+                regs.get(Register::Pc).unwrap_or_default()
+            } else {
+                return Err(anyhow!("Unable to get current PC register"));
+            };
+            
+            // Disassemble current instruction to check if it's a call
+            let instruction = self.disassembler.disassemble_single(pid, pc)?;
+            
+            if instruction.is_call() {
+                // It's a call instruction - we need to:
+                // 1. Get the address of the next instruction after the call
+                // 2. Set a temporary breakpoint there
+                // 3. Continue execution
+                // 4. Remove the temporary breakpoint when hit
+                
+                // Calculate next instruction address (PC + instruction size)
+                let next_addr = pc + instruction.size() as u64;
+                info!("Setting temporary breakpoint for step-over at 0x{:x}", next_addr);
+                
+                // Set temporary breakpoint at the return address
+                let saved_data = self.platform.set_breakpoint(pid, next_addr)?;
+                
+                // Create a special "temporary" breakpoint
+                let mut temp_bp = Breakpoint::new(next_addr, saved_data);
+                temp_bp.set_temp(true);
+                
+                // Add to breakpoint manager
+                let temp_bp_idx = self.breakpoints.add_breakpoint(temp_bp);
+                
+                // Continue execution
+                self.continue_execution()?;
+                
+                // When we hit the breakpoint, we'll stop, and we should clean up the temp breakpoint
+                if self.state == DebuggerState::Stopped && self.current_breakpoint == Some(next_addr) {
+                    // Remove the temporary breakpoint
+                    if let Err(e) = self.remove_breakpoint(next_addr) {
+                        warn!("Error removing temporary breakpoint: {}", e);
+                    }
+                    
+                    info!("Completed step-over operation at 0x{:x}", next_addr);
+                }
+                
+                Ok(())
+            } else {
+                // Not a call instruction, just do a regular step
+                info!("Not a call instruction, performing normal step");
+                self.step()
+            }
+        } else {
+            Err(anyhow!("Cannot step over: program not loaded"))
+        }
+    }
+    
+    /// Step out of the current function
+    pub fn step_out(&mut self) -> Result<()> {
+        if let Some(pid) = self.pid {
+            info!("Stepping out of current function");
+            
+            if self.state != DebuggerState::Stopped {
+                return Err(anyhow!("Cannot step out: program not stopped"));
+            }
+            
+            // Get the current thread ID
+            let thread_id = self.thread_manager.current_thread_id().unwrap_or_default();
+            
+            // Get the current function's stack frame
+            let current_frame = self.thread_manager.get_thread(thread_id)
+                .and_then(|t| t.call_stack().first().cloned());
+            
+            if let Some(frame) = current_frame {
+                // Get the return address - in ARM64, the link register (LR) is used for return
+                let return_addr = frame.pc; // Assuming the PC field contains the address we need
+                
+                if return_addr == 0 {
+                    return Err(anyhow!("Cannot step out: no valid return address in current frame"));
+                }
+                
+                info!("Setting temporary breakpoint for step-out at return address 0x{:x}", return_addr);
+                
+                // Set a temporary breakpoint at the return address
+                let saved_data = self.platform.set_breakpoint(pid, return_addr)?;
+                
+                // Create a special "temporary" breakpoint
+                let mut temp_bp = Breakpoint::new(return_addr, saved_data);
+                temp_bp.set_temp(true);
+                
+                // Add to breakpoint manager
+                let temp_bp_idx = self.breakpoints.add_breakpoint(temp_bp);
+                
+                // Continue execution
+                self.continue_execution()?;
+                
+                // When we hit the breakpoint, we'll stop, and we should clean up the temp breakpoint
+                if self.state == DebuggerState::Stopped && self.current_breakpoint == Some(return_addr) {
+                    // Remove the temporary breakpoint
+                    if let Err(e) = self.remove_breakpoint(return_addr) {
+                        warn!("Error removing temporary breakpoint: {}", e);
+                    }
+                    
+                    info!("Completed step-out operation at 0x{:x}", return_addr);
+                }
+                
+                Ok(())
+            } else {
+                Err(anyhow!("Cannot step out: no stack frame information available"))
+            }
+        } else {
+            Err(anyhow!("Cannot step out: program not loaded"))
+        }
     }
     
     /// Continue execution
@@ -1730,6 +1861,38 @@ impl Debugger {
         }
         
         Err(anyhow!("No breakpoint found at address 0x{:x}", address))
+    }
+
+    /// Update the state of a thread
+    fn update_thread_state(&mut self, thread_id: u64, registers: Registers, state: ThreadState, stop_reason: Option<String>, address: u64) -> Result<()> {
+        let is_at_breakpoint = self.breakpoints.find_by_address(address).is_some();
+        
+        if let Some(thread) = self.thread_manager.get_thread_mut(thread_id) {
+            thread.set_registers(registers);
+            thread.set_state(state);
+            thread.set_stop_reason(stop_reason);
+            
+            // Make this the current thread if we don't have one already
+            // or if this thread is at a breakpoint (prioritize breakpoints)
+            if self.thread_manager.current_thread_id().is_none() || 
+               (is_at_breakpoint && !self.thread_manager.any_thread_at_breakpoint()) {
+                let _ = self.thread_manager.set_current_thread(thread_id);
+            }
+            
+            // Update call stack if this is important thread (current or at breakpoint)
+            if self.thread_manager.current_thread_id() == Some(thread_id) || is_at_breakpoint {
+                if let Ok(stack) = self.build_call_stack(thread_id) {
+                    let _ = self.thread_manager.update_call_stack(thread_id, stack);
+                }
+            }
+        }
+        
+        // Mark the current breakpoint if at one
+        if is_at_breakpoint {
+            self.current_breakpoint = Some(address);
+        }
+        
+        Ok(())
     }
 }
 

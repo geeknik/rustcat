@@ -3,7 +3,6 @@
 //! NOTE: This file is currently disabled/incomplete due to build issues with lifetimes and borrowing.
 //! Task #7 (Implement DWARF Parsing) is marked as "blocked" until these issues are resolved.
 
-use anyhow::Result;
 use std::marker::PhantomData;
 
 /// Placeholder DWARF parser

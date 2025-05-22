@@ -1,6 +1,5 @@
 use anyhow::{anyhow, Result};
 use log::{debug, info};
-use std::collections::HashMap;
 use std::fmt;
 
 // Mach-O magic numbers

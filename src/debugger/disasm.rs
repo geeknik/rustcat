@@ -49,6 +49,16 @@ impl Instruction {
         self
     }
     
+    /// Check if this is a call instruction
+    pub fn is_call(&self) -> bool {
+        self.is_call
+    }
+    
+    /// Get the size of the instruction in bytes
+    pub fn size(&self) -> usize {
+        self.bytes.len()
+    }
+    
     /// Get a formatted representation of the instruction
     pub fn format(&self) -> String {
         format!("{:016x}:  {}", self.address, self.text)
@@ -122,6 +132,25 @@ impl Disassembler {
             2 => [0x00, 0x10, 0x22, 0x91], // add x0, x1, #42
             3 => [0x41, 0x00, 0x00, 0x94], // bl somewhere
             _ => [0x02, 0x00, 0x00, 0x14], // b somewhere
+        }
+    }
+    
+    /// Disassemble a single instruction at the given address
+    pub fn disassemble_single(&self, _pid: i32, address: u64) -> Result<Instruction> {
+        // In a real implementation, we would read memory from the process using the PID
+        // For now, use our dummy implementation
+        let ins_bytes = self.get_dummy_bytes(address);
+        
+        // Decode the instruction
+        if let Some(instruction) = self.decode_arm64(&ins_bytes, address) {
+            Ok(instruction)
+        } else {
+            // Fallback for unknown instructions
+            Ok(Instruction::new(
+                address,
+                ins_bytes.to_vec(),
+                format!("unknown 0x{:02x}{:02x}{:02x}{:02x}", ins_bytes[0], ins_bytes[1], ins_bytes[2], ins_bytes[3])
+            ))
         }
     }
     

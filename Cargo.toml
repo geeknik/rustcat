@@ -11,8 +11,9 @@ categories = ["development-tools", "command-line-utilities", "debugging", "visua
 
 [dependencies]
 # UI/TUI dependencies
-ratatui = { version = "0.23.0", default-features = false, features = ["crossterm"] }
-crossterm = { version = "0.27.0", default-features = false }
+ratatui = "0.24"
+crossterm = "0.27"
+tokio = { version = "1.37", features = ["full"] }
 
 # Pin specific versions to resolve dependency conflicts
 mio = "=0.8.11"
@@ -27,7 +28,6 @@ libc = "0.2.172"
 cpp_demangle = "0.4.3"
 
 # Async runtime and utilities
-tokio = { version = "1.29.0", features = ["full"] }
 futures = "0.3.28"
 async-trait = "0.1.68"
 

@@ -1,7 +1,6 @@
 use std::process::{Command, Child};
 use std::ptr;
 use std::collections::HashMap;
-use std::time::Instant;
 
 use anyhow::{anyhow, Result};
 use log::{info, debug, warn, error};
@@ -1803,8 +1802,8 @@ impl MacosDebugger {
         }
         let name = String::from_utf8_lossy(&buf).trim_end_matches('\0').to_string();
         if name.is_empty() {
-            None
-        } else {
+                    None
+                } else {
             Some(name)
         }
     }

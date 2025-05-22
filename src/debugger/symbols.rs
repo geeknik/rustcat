@@ -5,12 +5,10 @@ use std::fs::File;
 use std::io::Read;
 
 use anyhow::{anyhow, Result};
-use goblin::Object;
 use log::{debug, warn, info};
 use cpp_demangle::Symbol as CppSymbol;
 // We'll use the cpp_demangle crate for Rust symbols too until we add rustc_demangle
 // use rustc_demangle::demangle as rust_demangle;
-use crate::debugger::macho_parser;
 
 /// Symbol type classification
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -443,11 +441,9 @@ impl SymbolTable {
     /// Load a binary file and parse debug symbols
     pub fn load_file(&mut self, path: &Path) -> Result<()> {
         info!("Loading symbols from {:?}", path);
-        
         let mut file = File::open(path)?;
         let mut buffer = Vec::new();
         file.read_to_end(&mut buffer)?;
-        
         // Try to detect file format
         if buffer.len() >= 4 {
             let magic = u32::from_le_bytes([buffer[0], buffer[1], buffer[2], buffer[3]]);
@@ -456,26 +452,33 @@ impl SymbolTable {
                 0xfeedfacf | 0xcffaedfe | 0xfeedface | 0xcefaedfe => {
                     info!("Detected Mach-O file format");
                     #[cfg(feature = "macho")]
-                    return self.load_macho_file(&buffer);
+                    return self.load_macho_file(&buffer)
+                        .map_err(|e| {
+                            error!("Failed to load Mach-O symbols: {}", e);
+                            anyhow!("Mach-O parsing failed: {}.\n\
+                                If this is a stripped binary or missing debug info, try rebuilding with '-g'.\n\
+                                For best results, use an unstripped binary built for ARM64 with debug info.", e)
+                        });
                 },
                 // ELF magic (0x7F 'E' 'L' 'F')
                 0x464c457f => {
                     info!("Detected ELF file format");
-                    #[cfg(feature = "elf")]
-                    return self.load_elf_file(&buffer);
+                    // #[cfg(feature = "elf")]
+                    // return self.load_elf_file(&buffer);
+                    warn!("ELF support is not enabled. Skipping ELF symbol loading.");
                 },
                 // PE magic (MZ header)
                 0x5a4d => {
                     info!("Detected PE file format");
-                    #[cfg(feature = "pe")]
-                    return self.load_pe_file(&buffer);
+                    // #[cfg(feature = "pe")]
+                    // return self.load_pe_file(&buffer);
+                    warn!("PE support is not enabled. Skipping PE symbol loading.");
                 },
                 _ => {
                     warn!("Unknown binary format with magic value: {:x}", magic);
                 }
             }
         }
-        
         Err(anyhow!("Unsupported binary format or failed to parse debug info"))
     }
     
@@ -483,16 +486,27 @@ impl SymbolTable {
     #[cfg(feature = "macho")]
     pub fn load_macho_file(&mut self, data: &[u8]) -> Result<()> {
         info!("Loading Mach-O symbols with custom parser");
-        
-        let parser = macho_parser::parse_macho(data)?;
-        
+        let parser = match macho_parser::parse_macho(data) {
+            Ok(p) => p,
+            Err(e) => {
+                error!("Mach-O parse error: {}. Falling back to goblin for minimal symbol extraction.", e);
+                return self.load_macho_symbols_goblin(data);
+            }
+        };
+        // Check architecture (ARM64 only)
+        let arch = parser.header.cpu_type;
+        let arch_str = Self::cpu_type_to_arch(arch);
+        info!("Mach-O architecture: {} (cpu_type: 0x{:x})", arch_str, arch);
+        if arch_str != "arm64" {
+            error!("Unsupported architecture: {}. Only ARM64 is supported.", arch_str);
+            return Err(anyhow!("Unsupported architecture: {}. Only ARM64 is supported.", arch_str));
+        }
         // Load sections
         for section in parser.get_sections() {
             let section_flags = match section.is_code() {
                 true => 0x1, // EXECUTABLE flag
                 false => 0x2 | 0x4, // READABLE | WRITABLE flags
             };
-            
             self.sections.push(Section::new(
                 section.name.clone(),
                 section.address,
@@ -500,15 +514,19 @@ impl SymbolTable {
                 section_flags
             ));
         }
-        
         // Load symbols
-        for symbol in parser.get_symbols() {
+        let symbols = parser.get_symbols();
+        if symbols.is_empty() {
+            warn!("No symbols found in Mach-O binary. The binary may be stripped or missing debug info.");
+            warn!("For best results, rebuild with '-g' and avoid 'strip'. Falling back to goblin for minimal symbol extraction.");
+            return self.load_macho_symbols_goblin(data);
+        }
+        for symbol in symbols {
             let sym_type = match symbol.symbol_type {
                 macho_parser::SymbolType::Function => SymbolType::Function,
                 macho_parser::SymbolType::Data => SymbolType::Data,
                 _ => SymbolType::Other,
             };
-            
             let symbol_obj = Symbol::new(
                 symbol.name.clone(),
                 symbol.address,
@@ -518,14 +536,87 @@ impl SymbolTable {
                 None,
                 None,
             );
-            
             self.add_symbol(symbol_obj);
         }
-        
         info!("Loaded {} symbols and {} sections from Mach-O file", 
               parser.get_symbols().len(), parser.get_sections().len());
-        
         Ok(())
+    }
+    
+    /// Fallback: Use goblin to extract minimal Mach-O symbols if custom parser fails or finds none
+    #[cfg(feature = "macho")]
+    fn load_macho_symbols_goblin(&mut self, data: &[u8]) -> Result<()> {
+        use goblin::mach::Mach;
+        match Mach::parse(data) {
+            Ok(Mach::Binary(macho)) => {
+                info!("[goblin] Parsed Mach-O binary for fallback symbol extraction");
+                // Sections
+                for segment in &macho.segments {
+                    let segment_name = segment.name().unwrap_or("[unnamed]");
+                    let segment_start = segment.vmaddr as u64;
+                    let segment_size = segment.vmsize as u64;
+                    let segment_flags = segment.initprot as u64;
+                    if segment_size > 0 && segment_start > 0 {
+                        self.sections.push(Section::new(
+                            format!("{}:segment", segment_name),
+                            segment_start,
+                            segment_size,
+                            segment_flags,
+                        ));
+                    }
+                    if let Ok(gob_sections) = segment.sections() {
+                        for (section, _) in gob_sections {
+                            if let Ok(section_name) = section.name() {
+                                let address = section.addr as u64;
+                                let size = section.size;
+                                let mut flags: u32 = 0;
+                                if section.flags & 0x80000000 != 0 { flags |= 1; }
+                                if section.flags & 0x00000001 != 0 { flags |= 1; }
+                                if size > 0 && address > 0 {
+                                    self.sections.push(Section::new(
+                                        section_name.to_string(),
+                                        address,
+                                        size,
+                                        flags as u64,
+                                    ));
+                                }
+                            }
+                        }
+                    }
+                }
+                // Symbols
+                if let Some(symtab) = macho.symbols {
+                    for sym in symtab.iter() {
+                        if let Ok(name) = sym.name() {
+                            let addr = sym.n_value;
+                            let symbol_type = if sym.is_stab() {
+                                SymbolType::Debug
+                            } else if sym.is_global() {
+                                SymbolType::Function // Heuristic: treat global as function
+                            } else {
+                                SymbolType::Other
+                            };
+                            let symbol_obj = Symbol::new(
+                                name.to_string(),
+                                addr,
+                                None,
+                                symbol_type,
+                                None,
+                                None,
+                                None,
+                            );
+                            self.add_symbol(symbol_obj);
+                        }
+                    }
+                    info!("[goblin] Loaded {} fallback symbols from Mach-O", symtab.len());
+                } else {
+                    warn!("[goblin] No symbol table found in Mach-O binary");
+                }
+                Ok(())
+            }
+            Ok(_) => Err(anyhow!("[goblin] Not a Mach-O binary")),
+            Err(e) => Err(anyhow!("[goblin] Mach-O parse error: {}", e)),
+        }
     }
     
     /// Convert COFF machine type to architecture string
