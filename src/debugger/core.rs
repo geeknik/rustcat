@@ -508,7 +508,7 @@ impl Debugger {
             
             if is_at_breakpoint {
                 // Get the current thread ID
-                let thread_id = self.thread_manager.current_thread_id().unwrap_or_default();
+                let _thread_id = self.thread_manager.current_thread_id().unwrap_or_default();
                 
                 // If at a breakpoint, we need to:
                 // 1. Remove the breakpoint temporarily
@@ -517,7 +517,7 @@ impl Debugger {
                 // 4. Continue if we're not at the breakpoint anymore
                 
                 if let Some(bp_addr) = self.current_breakpoint {
-                    if let Some((index, bp)) = self.breakpoints.find_by_address(bp_addr) {
+                    if let Some((_index, bp)) = self.breakpoints.find_by_address(bp_addr) {
                         let saved_data = bp.saved_data();
                         
                         // Remove breakpoint temporarily
@@ -544,13 +544,13 @@ impl Debugger {
                     // Update thread state
                     if let Ok(registers) = self.get_registers() {
                         let pc = registers.get(Register::Pc).unwrap_or_default();
-                        if let Err(e) = self.update_thread_state(thread_id, registers, ThreadState::Stopped, Some(format!("Stepped to 0x{:x}", pc)), pc) {
+                        if let Err(e) = self.update_thread_state(_thread_id, registers, ThreadState::Stopped, Some(format!("Stepped to 0x{:x}", pc)), pc) {
                             warn!("Error updating thread state: {}", e);
                         }
                     }
                     
                     // Clear current breakpoint if we've moved past it
-                    if let Some(regs) = self.thread_manager.get_thread(thread_id).and_then(|t| t.registers()) {
+                    if let Some(regs) = self.thread_manager.get_thread(_thread_id).and_then(|t| t.registers()) {
                         let pc = regs.get(Register::Pc).unwrap_or_default();
                         if self.current_breakpoint != Some(pc) {
                             self.current_breakpoint = None;
@@ -569,10 +569,10 @@ impl Debugger {
                 }
                 
                 // Update thread state
-                let thread_id = self.thread_manager.current_thread_id().unwrap_or_default();
+                let _thread_id = self.thread_manager.current_thread_id().unwrap_or_default();
                 if let Ok(registers) = self.get_registers() {
                     let pc = registers.get(Register::Pc).unwrap_or_default();
-                    if let Err(e) = self.update_thread_state(thread_id, registers, ThreadState::Stopped, Some(format!("Stepped to 0x{:x}", pc)), pc) {
+                    if let Err(e) = self.update_thread_state(_thread_id, registers, ThreadState::Stopped, Some(format!("Stepped to 0x{:x}", pc)), pc) {
                         warn!("Error updating thread state: {}", e);
                     }
                 }
@@ -594,7 +594,7 @@ impl Debugger {
             }
             
             // Get the current thread ID
-            let thread_id = self.thread_manager.current_thread_id().unwrap_or_default();
+            let _thread_id = self.thread_manager.current_thread_id().unwrap_or_default();
             
             // Get current instruction to see if it's a call
             let pc = if let Ok(regs) = self.get_registers() {
@@ -625,7 +625,7 @@ impl Debugger {
                 temp_bp.set_temp(true);
                 
                 // Add to breakpoint manager
-                let temp_bp_idx = self.breakpoints.add_breakpoint(temp_bp);
+                let _temp_bp_idx = self.breakpoints.add_breakpoint(temp_bp);
                 
                 // Continue execution
                 self.continue_execution()?;
@@ -661,10 +661,10 @@ impl Debugger {
             }
             
             // Get the current thread ID
-            let thread_id = self.thread_manager.current_thread_id().unwrap_or_default();
+            let _thread_id = self.thread_manager.current_thread_id().unwrap_or_default();
             
             // Get the current function's stack frame
-            let current_frame = self.thread_manager.get_thread(thread_id)
+            let current_frame = self.thread_manager.get_thread(_thread_id)
                 .and_then(|t| t.call_stack().first().cloned());
             
             if let Some(frame) = current_frame {
@@ -685,7 +685,7 @@ impl Debugger {
                 temp_bp.set_temp(true);
                 
                 // Add to breakpoint manager
-                let temp_bp_idx = self.breakpoints.add_breakpoint(temp_bp);
+                let _temp_bp_idx = self.breakpoints.add_breakpoint(temp_bp);
                 
                 // Continue execution
                 self.continue_execution()?;
@@ -1802,7 +1802,7 @@ impl Debugger {
 
     /// Load symbols from a goblin-parsed Mach-O binary
     #[cfg(feature = "macho")]
-    pub fn load_macho_symbols(&mut self, macho_data: &[u8]) -> Result<()> {
+    pub fn load_macho_symbols(&mut self, _macho_data: &[u8]) -> Result<()> {
         // This implementation is currently disabled due to Symbol type errors
         // Will be implemented fully when DWARF integration is complete
         info!("Macho symbol loading disabled during DWARF task restructuring");

@@ -7,7 +7,7 @@ use ratatui::{
     text::{Span, Line as Spans}
 };
 use crossterm::{
-    event::{self, Event, KeyCode, KeyEvent, KeyModifiers}, 
+    event::{self, Event, KeyCode}, 
     terminal::{enable_raw_mode, disable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen}, 
     execute
 };

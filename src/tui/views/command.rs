@@ -1,11 +1,11 @@
 use ratatui::{
-    widgets::{Block, Borders, Paragraph, Wrap, Clear},
+    widgets::{Paragraph, Block, Borders, Wrap, Clear},
     layout::Rect,
     style::{Style, Color},
     text::{Span, Line as Spans},
     Frame
 };
-use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+use crossterm::event::{KeyCode, KeyEvent};
 use std::time::{Duration, Instant};
 
 use crate::debugger::core::Debugger;
@@ -43,7 +43,8 @@ impl CommandView {
         }
     }
 
-    pub fn render(&self, f: &mut Frame, area: Rect, debugger: &Debugger) {
+    /// Render the command view
+    pub fn render(&self, f: &mut Frame, area: Rect, _debugger: &Debugger) {
         // Only render when in editing mode or if we have a message to display
         if self.input_mode == InputMode::Normal && self.message.is_none() && !self.show_command_bar {
             return;

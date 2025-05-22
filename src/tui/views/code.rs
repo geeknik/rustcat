@@ -2,8 +2,8 @@ use ratatui::{
     widgets::{Block, Borders, Paragraph, Wrap},
     layout::Rect,
     style::{Style, Color},
-    text::{Span, Line as Spans, Text},
-    Frame, backend::Backend
+    text::{Span, Line as Spans},
+    Frame
 };
 
 use crate::debugger::core::Debugger;

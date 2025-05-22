@@ -486,11 +486,11 @@ impl SymbolTable {
     #[cfg(feature = "macho")]
     pub fn load_macho_file(&mut self, data: &[u8]) -> Result<()> {
         info!("Loading Mach-O symbols with custom parser");
-        let parser = match macho_parser::parse_macho(data) {
+        let parser = match crate::debugger::macho_parser::parse_macho(data) {
             Ok(p) => p,
             Err(e) => {
                 error!("Mach-O parse error: {}. Falling back to goblin for minimal symbol extraction.", e);
-                return self.load_macho_symbols_goblin(data);
+                return self.load_macho_fallback(data);
             }
         };
         // Check architecture (ARM64 only)
@@ -519,12 +519,12 @@ impl SymbolTable {
         if symbols.is_empty() {
             warn!("No symbols found in Mach-O binary. The binary may be stripped or missing debug info.");
             warn!("For best results, rebuild with '-g' and avoid 'strip'. Falling back to goblin for minimal symbol extraction.");
-            return self.load_macho_symbols_goblin(data);
+            return self.load_macho_fallback(data);
         }
         for symbol in symbols {
             let sym_type = match symbol.symbol_type {
-                macho_parser::SymbolType::Function => SymbolType::Function,
-                macho_parser::SymbolType::Data => SymbolType::Data,
+                crate::debugger::macho_parser::SymbolType::Function => SymbolType::Function,
+                crate::debugger::macho_parser::SymbolType::Data => SymbolType::Data,
                 _ => SymbolType::Other,
             };
             let symbol_obj = Symbol::new(
@@ -545,7 +545,7 @@ impl SymbolTable {
     
     /// Fallback: Use goblin to extract minimal Mach-O symbols if custom parser fails or finds none
     #[cfg(feature = "macho")]
-    fn load_macho_symbols_goblin(&mut self, data: &[u8]) -> Result<()> {
+    fn load_macho_fallback(&mut self, data: &[u8]) -> Result<()> {
         use goblin::mach::Mach;
         match Mach::parse(data) {
             Ok(Mach::Binary(macho)) => {
@@ -586,33 +586,46 @@ impl SymbolTable {
                 }
                 // Symbols
                 if let Some(symtab) = macho.symbols {
+                    let mut symbols = Vec::new();
                     for sym in symtab.iter() {
-                        if let Ok(name) = sym.name() {
-                            let addr = sym.n_value;
-                            let symbol_type = if sym.is_stab() {
-                                SymbolType::Debug
-                            } else if sym.is_global() {
-                                SymbolType::Function // Heuristic: treat global as function
-                            } else {
-                                SymbolType::Other
-                            };
-                            let symbol_obj = Symbol::new(
-                                name.to_string(),
-                                addr,
-                                None,
-                                symbol_type,
-                                None,
-                                None,
-                                None,
-                            );
-                            self.add_symbol(symbol_obj);
+                        match sym {
+                            Ok((name, nlist)) => {
+                                let addr = nlist.n_value;
+                                let symbol_type = if nlist.is_stab() {
+                                    SymbolType::Debug
+                                } else if nlist.is_global() {
+                                    SymbolType::Function
+                                } else {
+                                    SymbolType::Data
+                                };
+
+                                // Create symbol and add to collection
+                                let symbol = Symbol::new(
+                                    name.to_string(),
+                                    addr,
+                                    0, // Size unknown from goblin
+                                    symbol_type,
+                                );
+                                symbols.push(symbol);
+                            }
+                            Err(e) => {
+                                debug!("Error processing symbol: {}", e);
+                            }
                         }
                     }
-                    info!("[goblin] Loaded {} fallback symbols from Mach-O", symtab.len());
+
+                    // Log the number of symbols found
+                    info!("[goblin] Loaded {} fallback symbols from Mach-O", symbols.len());
+                    
+                    // Add all symbols to our collection
+                    for symbol in symbols {
+                        self.add_symbol(symbol);
+                    }
+                    Ok(())
                 } else {
                     warn!("[goblin] No symbol table found in Mach-O binary");
+                    Ok(())
                 }
-                Ok(())
             }
             Ok(_) => Err(anyhow!("[goblin] Not a Mach-O binary")),
             Err(e) => Err(anyhow!("[goblin] Mach-O parse error: {}", e)),
