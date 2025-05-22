@@ -43,7 +43,7 @@ pub mod platform;
 /// Re-export key modules for easier access in tests
 pub use debugger::core::Debugger;
 pub use debugger::memory::{MemoryMap, MemoryRegion, Protection, MemoryFormat};
-pub use tui::app::{App, View, Command as AppCommand};
+pub use tui::app::{App, View, Command};
 
 /// Version information
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
@@ -60,7 +60,7 @@ pub fn init_logging(level: log::LevelFilter) {
 }
 
 /// Parse a command string (wrapper around `App::parse_command`)
-pub fn parse_command(cmd_str: &str) -> Result<AppCommand, String> {
+pub fn parse_command(cmd_str: &str) -> Result<Command, String> {
     // Use a real App instance to parse the command
     // This assumes App::parse_command is a pure function (does not require full App state)
     // If not, refactor App::parse_command to be a standalone function or move to a command module

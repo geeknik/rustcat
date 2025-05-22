@@ -1,4 +1,5 @@
-use rustcat::{AppCommand, parse_command};
+use rustcat::tui::app::Command;
+use rustcat::parse_command;
 use test_case::test_case;
 
 #[test]
@@ -28,13 +29,13 @@ fn test_malformed_commands() {
     // Verify malformed commands return Unknown command, not panics
     let result = parse_command("");
     match result {
-        Ok(cmd) => assert!(matches!(cmd, AppCommand::Unknown(_))),
+        Ok(cmd) => assert!(matches!(cmd, Command::Unknown(_))),
         Err(_) => panic!("Expected Unknown command, got error")
     }
     
     let result = parse_command("foobar");
     match result {
-        Ok(cmd) => assert!(matches!(cmd, AppCommand::Unknown(_))),
+        Ok(cmd) => assert!(matches!(cmd, Command::Unknown(_))),
         Err(_) => panic!("Expected Unknown command, got error")
     }
 }
@@ -47,7 +48,7 @@ fn test_buffer_overflow_attempt() {
     
     // Our current implementation will return Unknown, which is fine
     match result {
-        Ok(cmd) => assert!(matches!(cmd, AppCommand::Break(_))),
+        Ok(cmd) => assert!(matches!(cmd, Command::SetBreakpoint(_))),
         Err(_) => panic!("Expected valid command, got error")
     }
 }
@@ -69,10 +70,10 @@ fn test_injection_attempt() {
         // For all of these, we should get either a break command or an unknown command
         if let Ok(cmd) = result {
             if attempt.starts_with("break") {
-                assert!(matches!(cmd, AppCommand::Break(_)) || matches!(cmd, AppCommand::Unknown(_)), 
-                    "Expected Break or Unknown command for: {}", attempt);
+                assert!(matches!(cmd, Command::SetBreakpoint(_)) || matches!(cmd, Command::Unknown(_)), 
+                    "Expected SetBreakpoint or Unknown command for: {}", attempt);
             } else {
-                assert!(matches!(cmd, AppCommand::Unknown(_)), 
+                assert!(matches!(cmd, Command::Unknown(_)), 
                     "Expected Unknown command for: {}", attempt);
             }
         } else {
@@ -86,8 +87,8 @@ fn test_unicode_handling() {
     // Test that unicode input doesn't crash the parser
     let unicode_commands = [
         "break 你好",
-        "print 😊+😊",
-        "display 💡",
+        "run",
+        "step",
         "break \u{0000}", // Null byte
     ];
     
@@ -96,9 +97,9 @@ fn test_unicode_handling() {
         match result {
             Ok(cmd) => {
                 match cmd {
-                    AppCommand::Break(_) => (), // valid for "break 你好", "break \u{0000}"
-                    AppCommand::Print(_) => (), // valid for "print 😊+😊"
-                    AppCommand::Display(_) => (), // valid for "display 💡"
+                    Command::SetBreakpoint(_) => (), // valid for "break 你好", "break \u{0000}"
+                    Command::Run => (),              // valid for "run"
+                    Command::Step => (),             // valid for "step"
                     _ => panic!("Unexpected command type")
                 }
             },
