@@ -158,6 +158,10 @@ impl MachOParser {
         Ok(())
     }
     
+    pub fn get_cpu_type(&self) -> u32 {
+        self.header.cpu_type
+    }
+    
     pub fn get_sections(&self) -> &[MachOSection] {
         &self.sections
     }

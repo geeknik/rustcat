@@ -5,7 +5,7 @@ use std::fs::File;
 use std::io::Read;
 
 use anyhow::{anyhow, Result};
-use log::{debug, warn, info};
+use log::{debug, warn, info, error};
 use cpp_demangle::Symbol as CppSymbol;
 // We'll use the cpp_demangle crate for Rust symbols too until we add rustc_demangle
 // use rustc_demangle::demangle as rust_demangle;
@@ -494,7 +494,7 @@ impl SymbolTable {
             }
         };
         // Check architecture (ARM64 only)
-        let arch = parser.header.cpu_type;
+        let arch = parser.get_cpu_type();
         let arch_str = Self::cpu_type_to_arch(arch);
         info!("Mach-O architecture: {} (cpu_type: 0x{:x})", arch_str, arch);
         if arch_str != "arm64" {
@@ -603,8 +603,11 @@ impl SymbolTable {
                                 let symbol = Symbol::new(
                                     name.to_string(),
                                     addr,
-                                    0, // Size unknown from goblin
+                                    Some(0), // Size unknown from goblin
                                     symbol_type,
+                                    None,    // No source file
+                                    None,    // No line number
+                                    None,    // No visibility info
                                 );
                                 symbols.push(symbol);
                             }
